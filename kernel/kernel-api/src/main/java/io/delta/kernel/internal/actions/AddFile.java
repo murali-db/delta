@@ -72,7 +72,7 @@ public class AddFile extends RowBackedAction {
 
   /**
    * Utility to generate {@link AddFile} action instance from the given {@link DataFileStatus} and
-   * partition values.
+   * partition values. Use null DV descriptor when not present.
    */
   public static AddFile convertDataFileStatus(
       StructType physicalSchema,
@@ -81,6 +81,33 @@ public class AddFile extends RowBackedAction {
       Map<String, Literal> partitionValues,
       boolean dataChange,
       Map<String, String> tags) {
+
+    return convertDataFileStatus(
+        physicalSchema,
+        tableRoot,
+        dataFileStatus,
+        partitionValues,
+        dataChange,
+        tags,
+        null); // DeletionVectorDescriptor is absent
+  }
+
+  /**
+   * Utility to generate {@link AddFile} action instance from the given {@link DataFileStatus} and
+   * partition values.
+   */
+  public static AddFile convertDataFileStatus(
+      StructType physicalSchema,
+      URI tableRoot,
+      DataFileStatus dataFileStatus,
+      Map<String, Literal> partitionValues,
+      boolean dataChange,
+      Map<String, String> tags,
+      DeletionVectorDescriptor deletionVectorDescriptor) {
+
+    Optional<DeletionVectorDescriptor> deletionVectorOpt =
+        deletionVectorDescriptor != null ? Optional.of(deletionVectorDescriptor) : Optional.empty();
+
     Optional<MapValue> tagMapValue =
         !tags.isEmpty() ? Optional.of(VectorUtils.stringStringMapValue(tags)) : Optional.empty();
     Row row =
@@ -91,8 +118,8 @@ public class AddFile extends RowBackedAction {
             dataFileStatus.getSize(),
             dataFileStatus.getModificationTime(),
             dataChange,
-            Optional.empty(), // deletionVector
-            tagMapValue, // tags
+            deletionVectorOpt,
+            tagMapValue,
             Optional.empty(), // baseRowId
             Optional.empty(), // defaultRowCommitVersion
             dataFileStatus.getStatistics());
@@ -116,8 +143,6 @@ public class AddFile extends RowBackedAction {
 
     checkArgument(path != null, "path is not nullable");
     checkArgument(partitionValues != null, "partitionValues is not nullable");
-    // TODO - Add support for DeletionVectorDescriptor
-    checkArgument(!deletionVector.isPresent(), "DeletionVectorDescriptor is unsupported");
 
     Map<Integer, Object> fieldMap = new HashMap<>();
     fieldMap.put(FULL_SCHEMA.indexOf("path"), path);
@@ -131,7 +156,20 @@ public class AddFile extends RowBackedAction {
         version -> fieldMap.put(FULL_SCHEMA.indexOf("defaultRowCommitVersion"), version));
     stats.ifPresent(
         stat -> fieldMap.put(FULL_SCHEMA.indexOf("stats"), stat.serializeAsJson(physicalSchema)));
+    deletionVector.ifPresent(
+        dv -> {
+          Map<Integer, Object> dvFieldMap = new HashMap<>();
+          StructType dvSchema = DeletionVectorDescriptor.READ_SCHEMA;
 
+          dvFieldMap.put(dvSchema.indexOf("storageType"), dv.getStorageType());
+          dvFieldMap.put(dvSchema.indexOf("pathOrInlineDv"), dv.getPathOrInlineDv());
+          dv.getOffset().ifPresent(offset -> dvFieldMap.put(dvSchema.indexOf("offset"), offset));
+          dvFieldMap.put(dvSchema.indexOf("sizeInBytes"), dv.getSizeInBytes());
+          dvFieldMap.put(dvSchema.indexOf("cardinality"), dv.getCardinality());
+
+          Row dvRow = new GenericRow(dvSchema, dvFieldMap);
+          fieldMap.put(FULL_SCHEMA.indexOf("deletionVector"), dvRow);
+        });
     return new GenericRow(FULL_SCHEMA, fieldMap);
   }
 

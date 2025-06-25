@@ -40,99 +40,176 @@ class CommitIcebergActionSuite extends DeltaTableWriteSuiteBase {
   private val tblPropertiesIcebergWriterCompatV1Enabled = Map(
     TableConfig.ICEBERG_WRITER_COMPAT_V1_ENABLED.getKey -> "true")
 
+  private val tblPropertiesIcebergWriterCompatV3Enabled = Map(
+    TableConfig.ICEBERG_WRITER_COMPAT_V3_ENABLED.getKey -> "true")
+
   /* ----- Error cases ----- */
 
-  test("requires that maxRetries = 0") {
-    withTempDirAndEngine { (tablePath, engine) =>
-      val txn = createWriteTxnBuilder(Table.forPath(engine, tablePath))
-        .withSchema(engine, testSchema)
-        .withTableProperties(engine, tblPropertiesIcebergWriterCompatV1Enabled.asJava)
-        .build(engine)
-      intercept[UnsupportedOperationException] {
-        GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-          txn.getTransactionState(engine),
-          generateDataFileStatus(tablePath, "file1.parquet"),
-          Collections.emptyMap(),
-          true /* dataChange */
-        )
-      }
-      intercept[UnsupportedOperationException] {
-        GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
-          txn.getTransactionState(engine),
-          generateDataFileStatus(tablePath, "file1.parquet"),
-          Collections.emptyMap(),
-          true /* dataChange */
-        )
+  Seq("V1", "V3").foreach { version =>
+    test(s"$version: requires that maxRetries = 0") {
+      withTempDirAndEngine { (tablePath, engine) =>
+        val properties = if (version == "V1") tblPropertiesIcebergWriterCompatV1Enabled
+        else tblPropertiesIcebergWriterCompatV3Enabled
+
+        val txn = createWriteTxnBuilder(Table.forPath(engine, tablePath))
+          .withSchema(engine, testSchema)
+          .withTableProperties(engine, properties.asJava)
+          .build(engine)
+        intercept[UnsupportedOperationException] {
+          if (version == "V1") {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          } else {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          }
+        }
+        intercept[UnsupportedOperationException] {
+          if (version == "V1") {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          } else {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3RemoveAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          }
+        }
       }
     }
-  }
 
-  test("requires that icebergWriterCompatV1 enabled") {
-    withTempDirAndEngine { (tablePath, engine) =>
-      val txn = createWriteTxnBuilder(Table.forPath(engine, tablePath))
-        .withSchema(engine, testSchema)
-        .withMaxRetries(0)
-        .build(engine)
-      intercept[UnsupportedOperationException] {
-        GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-          txn.getTransactionState(engine),
-          generateDataFileStatus(tablePath, "file1.parquet"),
-          Collections.emptyMap(),
-          true /* dataChange */
-        )
-      }
-      intercept[UnsupportedOperationException] {
-        GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
-          txn.getTransactionState(engine),
-          generateDataFileStatus(tablePath, "file1.parquet"),
-          Collections.emptyMap(),
-          true /* dataChange */
-        )
+    test(s"$version: requires that icebergWriterCompat${version} enabled") {
+      withTempDirAndEngine { (tablePath, engine) =>
+        val txn = createWriteTxnBuilder(Table.forPath(engine, tablePath))
+          .withSchema(engine, testSchema)
+          .withMaxRetries(0)
+          .build(engine)
+        intercept[UnsupportedOperationException] {
+          if (version == "V1") {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          } else {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          }
+        }
+        intercept[UnsupportedOperationException] {
+          if (version == "V1") {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          } else {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3RemoveAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          }
+        }
       }
     }
-  }
 
-  test("partitioned tables unsupported") {
-    withTempDirAndEngine { (tablePath, engine) =>
-      val txn = createWriteTxnBuilder(Table.forPath(engine, tablePath))
-        .withSchema(engine, testPartitionSchema)
-        .withTableProperties(engine, tblPropertiesIcebergWriterCompatV1Enabled.asJava)
-        .withMaxRetries(0)
-        .withPartitionColumns(engine, testPartitionColumns.asJava)
-        .build(engine)
-      intercept[UnsupportedOperationException] {
-        GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-          txn.getTransactionState(engine),
-          generateDataFileStatus(tablePath, "file1.parquet"),
-          Collections.emptyMap(),
-          true /* dataChange */
-        )
-      }
-      intercept[UnsupportedOperationException] {
-        GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
-          txn.getTransactionState(engine),
-          generateDataFileStatus(tablePath, "file1.parquet"),
-          Collections.emptyMap(),
-          true /* dataChange */
-        )
+    test(s"$version: partitioned tables unsupported") {
+      withTempDirAndEngine { (tablePath, engine) =>
+        val properties = if (version == "V1") tblPropertiesIcebergWriterCompatV1Enabled
+        else tblPropertiesIcebergWriterCompatV3Enabled
+
+        val txn = createWriteTxnBuilder(Table.forPath(engine, tablePath))
+          .withSchema(engine, testPartitionSchema)
+          .withTableProperties(engine, properties.asJava)
+          .withMaxRetries(0)
+          .withPartitionColumns(engine, testPartitionColumns.asJava)
+          .build(engine)
+        intercept[UnsupportedOperationException] {
+          if (version == "V1") {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          } else {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          }
+        }
+        intercept[UnsupportedOperationException] {
+          if (version == "V1") {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          } else {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3RemoveAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet"),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          }
+        }
       }
     }
-  }
 
-  test("cannot create add without stats present") {
-    withTempDirAndEngine { (tablePath, engine) =>
-      val txn = createWriteTxnBuilder(Table.forPath(engine, tablePath))
-        .withSchema(engine, testSchema)
-        .withTableProperties(engine, tblPropertiesIcebergWriterCompatV1Enabled.asJava)
-        .withMaxRetries(0)
-        .build(engine)
-      intercept[KernelException] {
-        GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-          txn.getTransactionState(engine),
-          generateDataFileStatus(tablePath, "file1.parquet", includeStats = false),
-          Collections.emptyMap(),
-          true /* dataChange */
-        )
+    test(s"$version: cannot create add without stats present") {
+      withTempDirAndEngine { (tablePath, engine) =>
+        val properties = if (version == "V1") tblPropertiesIcebergWriterCompatV1Enabled
+        else tblPropertiesIcebergWriterCompatV3Enabled
+
+        val txn = createWriteTxnBuilder(Table.forPath(engine, tablePath))
+          .withSchema(engine, testSchema)
+          .withTableProperties(engine, properties.asJava)
+          .withMaxRetries(0)
+          .build(engine)
+        intercept[KernelException] {
+          if (version == "V1") {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet", includeStats = false),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          } else {
+            GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+              txn.getTransactionState(engine),
+              generateDataFileStatus(tablePath, "file1.parquet", includeStats = false),
+              Collections.emptyMap(),
+              true /* dataChange */
+            )
+          }
+        }
       }
     }
   }
@@ -225,255 +302,359 @@ class CommitIcebergActionSuite extends DeltaTableWriteSuiteBase {
     assert(addsFoundSet == expectedAdds.map(_.copy(dataChange = false)))
   }
 
-  test("Correctly commits adds to table and compat with Spark") {
-    withTempDirAndEngine { (tablePath, engine) =>
-      // Create table
-      createEmptyTable(
-        engine,
-        tablePath,
-        testSchema,
-        tableProperties = tblPropertiesIcebergWriterCompatV1Enabled)
+  Seq("V1", "V3").foreach { version =>
+    test(s"$version: Correctly commits adds to table and compat with Spark") {
+      withTempDirAndEngine { (tablePath, engine) =>
+        val properties = if (version == "V1") tblPropertiesIcebergWriterCompatV1Enabled
+        else tblPropertiesIcebergWriterCompatV3Enabled
 
-      // Append 1 add with dataChange = true
-      {
-        val txn = createTxn(engine, tablePath, maxRetries = 0)
-        val actionsToCommit = Seq(
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file1.parquet"),
-            Collections.emptyMap(),
-            true /* dataChange */ ))
-        commitTransaction(
-          txn,
+        // Create table
+        createEmptyTable(
           engine,
-          inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
-      }
+          tablePath,
+          testSchema,
+          tableProperties = properties)
 
-      // Append 1 add with dataChange = false (in theory this could involve updating stats but
-      // once we support remove add a case that looks like optimize/compaction)
-      {
-        val txn = createTxn(engine, tablePath, maxRetries = 0)
-        val actionsToCommit = Seq(
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file1.parquet"),
-            Collections.emptyMap(),
-            false /* dataChange */ ))
-        commitTransaction(
-          txn,
+        // Append 1 add with dataChange = true
+        {
+          val txn = createTxn(engine, tablePath, maxRetries = 0)
+          val actionsToCommit = Seq(
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */ )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */ )
+            })
+          commitTransaction(
+            txn,
+            engine,
+            inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+        }
+
+        // Append 1 add with dataChange = false (in theory this could involve updating stats but
+        // once we support remove add a case that looks like optimize/compaction)
+        {
+          val txn = createTxn(engine, tablePath, maxRetries = 0)
+          val actionsToCommit = Seq(
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            })
+          commitTransaction(
+            txn,
+            engine,
+            inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+        }
+
+        // Verify we wrote the adds we expected into the JSON files using Kernel's getChanges
+        checkActionsWrittenInJson(engine, tablePath, 0, Set())
+        checkActionsWrittenInJson(
           engine,
-          inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+          tablePath,
+          1,
+          Set(ExpectedAdd("file1.parquet", 1000, 10, true)))
+        checkActionsWrittenInJson(
+          engine,
+          tablePath,
+          2,
+          Set(ExpectedAdd("file1.parquet", 1000, 10, false)))
+
+        // Verify that Spark can read the actions written via log replay
+        checkSparkLogReplay(tablePath, 0, Set())
+        checkSparkLogReplay(tablePath, 1, Set(ExpectedAdd("file1.parquet", 1000, 10, true)))
+        // We added the same path twice so only the second remains after log replay
+        checkSparkLogReplay(tablePath, 2, Set(ExpectedAdd("file1.parquet", 1000, 10, false)))
       }
-
-      // Verify we wrote the adds we expected into the JSON files using Kernel's getChanges
-      checkActionsWrittenInJson(engine, tablePath, 0, Set())
-      checkActionsWrittenInJson(
-        engine,
-        tablePath,
-        1,
-        Set(ExpectedAdd("file1.parquet", 1000, 10, true)))
-      checkActionsWrittenInJson(
-        engine,
-        tablePath,
-        2,
-        Set(ExpectedAdd("file1.parquet", 1000, 10, false)))
-
-      // Verify that Spark can read the actions written via log replay
-      checkSparkLogReplay(tablePath, 0, Set())
-      checkSparkLogReplay(tablePath, 1, Set(ExpectedAdd("file1.parquet", 1000, 10, true)))
-      // We added the same path twice so only the second remains after log replay
-      checkSparkLogReplay(tablePath, 2, Set(ExpectedAdd("file1.parquet", 1000, 10, false)))
     }
-  }
 
-  test("Correctly commits adds and removes to table and compat with Spark") {
-    withTempDirAndEngine { (tablePath, engine) =>
-      // Create table
-      createEmptyTable(
-        engine,
-        tablePath,
-        testSchema,
-        tableProperties = tblPropertiesIcebergWriterCompatV1Enabled)
+    test(s"$version: Correctly commits adds and removes to table and compat with Spark") {
+      withTempDirAndEngine { (tablePath, engine) =>
+        val properties = if (version == "V1") tblPropertiesIcebergWriterCompatV1Enabled
+        else tblPropertiesIcebergWriterCompatV3Enabled
 
-      // Append 1 add with dataChange = true
-      {
-        val txn = createTxn(engine, tablePath, maxRetries = 0)
-        val actionsToCommit = Seq(
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file1.parquet"),
-            Collections.emptyMap(),
-            true /* dataChange */ ))
-        commitTransaction(
-          txn,
+        // Create table
+        createEmptyTable(
           engine,
-          inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
-      }
+          tablePath,
+          testSchema,
+          tableProperties = properties)
 
-      // Re-arrange data by removing that Add and adding a new Add
-      {
-        val txn = createTxn(engine, tablePath, maxRetries = 0)
-        val actionsToCommit = Seq(
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file1.parquet"),
-            Collections.emptyMap(),
-            false /* dataChange */ ),
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file2.parquet"),
-            Collections.emptyMap(),
-            false /* dataChange */ ))
-        commitTransaction(
-          txn,
+        // Append 1 add with dataChange = true
+        {
+          val txn = createTxn(engine, tablePath, maxRetries = 0)
+          val actionsToCommit = Seq(
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */ )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */ )
+            })
+          commitTransaction(
+            txn,
+            engine,
+            inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+        }
+
+        // Re-arrange data by removing that Add and adding a new Add
+        {
+          val txn = createTxn(engine, tablePath, maxRetries = 0)
+          val actionsToCommit = Seq(
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3RemoveAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            },
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file2.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file2.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            })
+          commitTransaction(
+            txn,
+            engine,
+            inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+        }
+
+        // Remove that add so that the table is empty
+        {
+          val txn = createTxn(engine, tablePath, maxRetries = 0)
+          val actionsToCommit = Seq(
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file2.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */ )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3RemoveAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file2.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */ )
+            })
+          commitTransaction(
+            txn,
+            engine,
+            inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+        }
+
+        // Verify we wrote the adds we expected into the JSON files using Kernel's getChanges
+        checkActionsWrittenInJson(engine, tablePath, 0, Set())
+        checkActionsWrittenInJson(
           engine,
-          inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
-      }
-
-      // Remove that add so that the table is empty
-      {
-        val txn = createTxn(engine, tablePath, maxRetries = 0)
-        val actionsToCommit = Seq(
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file2.parquet"),
-            Collections.emptyMap(),
-            true /* dataChange */ ))
-        commitTransaction(
-          txn,
+          tablePath,
+          1,
+          Set(ExpectedAdd("file1.parquet", 1000, 10, true)))
+        checkActionsWrittenInJson(
           engine,
-          inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+          tablePath,
+          2,
+          Set(
+            ExpectedAdd("file2.parquet", 1000, 10, false),
+            ExpectedRemove("file1.parquet", 1000, 10, false)))
+        checkActionsWrittenInJson(
+          engine,
+          tablePath,
+          3,
+          Set(ExpectedRemove("file2.parquet", 1000, 10, true)))
+
+        // Verify that Spark can read the actions written via log replay
+        checkSparkLogReplay(tablePath, 0, Set())
+        checkSparkLogReplay(tablePath, 1, Set(ExpectedAdd("file1.parquet", 1000, 10, true)))
+        checkSparkLogReplay(tablePath, 2, Set(ExpectedAdd("file2.parquet", 1000, 10, false)))
+        checkSparkLogReplay(tablePath, 3, Set())
       }
-
-      // Verify we wrote the adds we expected into the JSON files using Kernel's getChanges
-      checkActionsWrittenInJson(engine, tablePath, 0, Set())
-      checkActionsWrittenInJson(
-        engine,
-        tablePath,
-        1,
-        Set(ExpectedAdd("file1.parquet", 1000, 10, true)))
-      checkActionsWrittenInJson(
-        engine,
-        tablePath,
-        2,
-        Set(
-          ExpectedAdd("file2.parquet", 1000, 10, false),
-          ExpectedRemove("file1.parquet", 1000, 10, false)))
-      checkActionsWrittenInJson(
-        engine,
-        tablePath,
-        3,
-        Set(ExpectedRemove("file2.parquet", 1000, 10, true)))
-
-      // Verify that Spark can read the actions written via log replay
-      checkSparkLogReplay(tablePath, 0, Set())
-      checkSparkLogReplay(tablePath, 1, Set(ExpectedAdd("file1.parquet", 1000, 10, true)))
-      checkSparkLogReplay(tablePath, 2, Set(ExpectedAdd("file2.parquet", 1000, 10, false)))
-      checkSparkLogReplay(tablePath, 3, Set())
     }
-  }
 
-  test("append-only configuration is observed when committing removes") {
-    withTempDirAndEngine { (tablePath, engine) =>
-      // Create table
-      createEmptyTable(
-        engine,
-        tablePath,
-        testSchema,
-        tableProperties = tblPropertiesIcebergWriterCompatV1Enabled ++ Map(
-          TableConfig.APPEND_ONLY_ENABLED.getKey -> "true"))
+    test(s"$version: append-only configuration is observed when committing removes") {
+      withTempDirAndEngine { (tablePath, engine) =>
+        val properties = if (version == "V1") tblPropertiesIcebergWriterCompatV1Enabled
+        else tblPropertiesIcebergWriterCompatV3Enabled
 
-      // Append 1 add with dataChange = true
-      {
-        val txn = createTxn(engine, tablePath, maxRetries = 0)
-        val actionsToCommit = Seq(
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file1.parquet"),
-            Collections.emptyMap(),
-            true /* dataChange */ ))
-        commitTransaction(
-          txn,
+        // Create table
+        createEmptyTable(
           engine,
-          inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
-      }
+          tablePath,
+          testSchema,
+          tableProperties = properties ++ Map(
+            TableConfig.APPEND_ONLY_ENABLED.getKey -> "true"))
 
-      // Re-arrange data by removing that Add and adding a new Add
-      // (can commit remove with dataChange=false)
-      {
-        val txn = createTxn(engine, tablePath, maxRetries = 0)
-        val actionsToCommit = Seq(
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file1.parquet"),
-            Collections.emptyMap(),
-            false /* dataChange */ ),
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file2.parquet"),
-            Collections.emptyMap(),
-            false /* dataChange */ ))
-        commitTransaction(
-          txn,
-          engine,
-          inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
-      }
+        // Append 1 add with dataChange = true
+        {
+          val txn = createTxn(engine, tablePath, maxRetries = 0)
+          val actionsToCommit = Seq(
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */ )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */ )
+            })
+          commitTransaction(
+            txn,
+            engine,
+            inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+        }
 
-      // Cannot create remove with dataChange=true
-      {
-        val txn = createTxn(engine, tablePath, maxRetries = 0)
-        intercept[KernelException] {
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file1.parquet"),
-            Collections.emptyMap(),
-            true /* dataChange */
-          )
+        // Re-arrange data by removing that Add and adding a new Add
+        // (can commit remove with dataChange=false)
+        {
+          val txn = createTxn(engine, tablePath, maxRetries = 0)
+          val actionsToCommit = Seq(
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3RemoveAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            },
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file2.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file2.parquet"),
+                Collections.emptyMap(),
+                false /* dataChange */ )
+            })
+          commitTransaction(
+            txn,
+            engine,
+            inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+        }
+
+        // Cannot create remove with dataChange=true
+        {
+          val txn = createTxn(engine, tablePath, maxRetries = 0)
+          intercept[KernelException] {
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1RemoveAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */
+              )
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3RemoveAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true /* dataChange */
+              )
+            }
+          }
         }
       }
     }
-  }
 
-  test("Tags can be successfully passed for generating addFile") {
-    withTempDirAndEngine { (tablePath, engine) =>
-      // Create table
-      createEmptyTable(
-        engine,
-        tablePath,
-        testSchema,
-        tableProperties = tblPropertiesIcebergWriterCompatV1Enabled)
+    test(s"$version: Tags can be successfully passed for generating addFile") {
+      withTempDirAndEngine { (tablePath, engine) =>
+        val properties = if (version == "V1") tblPropertiesIcebergWriterCompatV1Enabled
+        else tblPropertiesIcebergWriterCompatV3Enabled
 
-      // Commit one add file with tags
-      val tags = Map("tag1" -> "abc", "tag2" -> "def")
-
-      {
-        val txn = createTxn(engine, tablePath, maxRetries = 0)
-        val actionsToCommit = Seq(
-          GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
-            txn.getTransactionState(engine),
-            generateDataFileStatus(tablePath, "file1.parquet"),
-            Collections.emptyMap(),
-            true, /* dataChange */
-            tags.asJava))
-        commitTransaction(
-          txn,
+        // Create table
+        createEmptyTable(
           engine,
-          inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+          tablePath,
+          testSchema,
+          tableProperties = properties)
+
+        // Commit one add file with tags
+        val tags = Map("tag1" -> "abc", "tag2" -> "def")
+
+        {
+          val txn = createTxn(engine, tablePath, maxRetries = 0)
+          val actionsToCommit = Seq(
+            if (version == "V1") {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV1AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true, /* dataChange */
+                tags.asJava)
+            } else {
+              GenerateIcebergCompatActionUtils.generateIcebergCompatWriterV3AddAction(
+                txn.getTransactionState(engine),
+                generateDataFileStatus(tablePath, "file1.parquet"),
+                Collections.emptyMap(),
+                true, /* dataChange */
+                tags.asJava)
+            })
+          commitTransaction(
+            txn,
+            engine,
+            inMemoryIterable(toCloseableIterator(actionsToCommit.asJava.iterator())))
+        }
+
+        // Read back committed ADD actions
+        val tableVersion = 1
+        val rows = Table.forPath(engine, tablePath).asInstanceOf[TableImpl]
+          .getChanges(engine, tableVersion, tableVersion, Set(DeltaAction.ADD).asJava)
+          .toSeq
+          .flatMap(_.getRows.toSeq)
+          .filterNot(row => row.isNullAt(row.getSchema.indexOf("add")))
+
+        assert(rows.size == 1)
+
+        val addFile = new AddFile(rows.head.getStruct(rows.head.getSchema.indexOf("add")))
+        assert(addFile.getTags.isPresent)
+        assert(VectorUtils.toJavaMap(addFile.getTags.get()).asScala.equals(tags))
       }
-
-      // Read back committed ADD actions
-      val version = 1
-      val rows = Table.forPath(engine, tablePath).asInstanceOf[TableImpl]
-        .getChanges(engine, version, version, Set(DeltaAction.ADD).asJava)
-        .toSeq
-        .flatMap(_.getRows.toSeq)
-        .filterNot(row => row.isNullAt(row.getSchema.indexOf("add")))
-
-      assert(rows.size == 1)
-
-      val addFile = new AddFile(rows.head.getStruct(rows.head.getSchema.indexOf("add")))
-      assert(addFile.getTags.isPresent)
-      assert(VectorUtils.toJavaMap(addFile.getTags.get()).asScala.equals(tags))
     }
   }
 }
