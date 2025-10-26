@@ -18,7 +18,6 @@ package io.delta.scan
 
 import java.io.IOException
 import java.lang.reflect.Method
-import java.util.Arrays
 
 import scala.jdk.CollectionConverters._
 
@@ -28,19 +27,13 @@ import org.apache.http.util.EntityUtils
 import org.apache.http.{HttpHeaders, HttpStatus}
 import org.apache.http.impl.client.HttpClientBuilder
 import org.apache.http.message.BasicHeader
-import shadedForDelta.org.apache.iceberg.expressions.{Expressions, ResidualEvaluator}
-import shadedForDelta.org.apache.iceberg.{BaseFileScanTask, DataFile, DataFiles, DeleteFile, PartitionSpec, PartitionSpecParser, Schema, SchemaParser}
-import shadedForDelta.org.apache.iceberg.types.Types
-import shadedForDelta.org.apache.iceberg.types.Types.NestedField.required
+import shadedForDelta.org.apache.iceberg.PartitionSpec
 import shadedForDelta.org.apache.iceberg.rest.requests.{PlanTableScanRequest, PlanTableScanRequestParser}
-import shadedForDelta.org.apache.iceberg.rest.responses.{PlanTableScanResponse, PlanTableScanResponseParser}
-import shadedForDelta.org.apache.iceberg.rest.PlanStatus
+import shadedForDelta.org.apache.iceberg.rest.responses.{PlanTableScanResponse}
 
 
 trait IcebergTableClient {
-  def planTableScan(namespace: String,
-    table: String
-  ): PlanTableScanResponse
+  def planTableScan(namespace: String, table: String): PlanTableScanResponse
 }
 
 class RESTIcebergTableClient(
@@ -110,39 +103,3 @@ class RESTIcebergTableClient(
     ).asInstanceOf[PlanTableScanResponse]
   }
 }
-
-/*
-class InMemoryIcebergTableClient extends IcebergTableClient {
-
-  val SCHEMA =
-    new Schema(required(3, "id", Types.IntegerType.get), required(4, "data", Types.StringType.get))
-
-  val SPEC: PartitionSpec = PartitionSpec.builderFor(SCHEMA).withSpecId(0).build()
-
-  val FILE_A: DataFile = DataFiles.builder(SPEC)
-    .withPath("/path/to/data-a.parquet")
-    .withFileSizeInBytes(10)
-    .withPartitionPath("data_bucket=0") // easy way to set partition data for now
-    .withRecordCount(1)
-    .build()
-
-  override def planTableScan(request: PlanTableScanRequest): PlanTableScanResponse = {
-    // TODO: validate the request
-
-    // construct response
-    val fileScanTask = new BaseFileScanTask(
-      FILE_A,
-      Array.empty[DeleteFile],
-      SchemaParser.toJson(SCHEMA),
-      PartitionSpecParser.toJson(SPEC),
-      ResidualEvaluator.unpartitioned(Expressions.alwaysTrue)).asFileScanTask()
-
-    val response = PlanTableScanResponse.builder()
-      .withPlanId(java.util.UUID.randomUUID().toString)
-      .withPlanStatus(PlanStatus.COMPLETED)
-      .withFileScanTasks(Seq(fileScanTask).asJava)
-      .build()
-    response
-  }
-}
-*/
