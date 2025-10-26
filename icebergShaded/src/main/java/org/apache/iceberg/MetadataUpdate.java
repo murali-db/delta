@@ -22,6 +22,7 @@ import java.io.Serializable;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import org.apache.iceberg.encryption.EncryptedKey;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.view.ViewMetadata;
 import org.apache.iceberg.view.ViewVersion;
@@ -573,6 +574,40 @@ public interface MetadataUpdate extends Serializable {
     @Override
     public void applyTo(TableMetadata.Builder metadataBuilder) {
       metadataBuilder.enableRowLineage();
+    }
+  }
+
+  class AddEncryptionKey implements MetadataUpdate {
+    private final EncryptedKey key;
+
+    public AddEncryptionKey(EncryptedKey key) {
+      this.key = key;
+    }
+
+    public EncryptedKey key() {
+      return key;
+    }
+
+    @Override
+    public void applyTo(TableMetadata.Builder builder) {
+      builder.addEncryptionKey(key);
+    }
+  }
+
+  class RemoveEncryptionKey implements MetadataUpdate {
+    private final String keyId;
+
+    public RemoveEncryptionKey(String keyId) {
+      this.keyId = keyId;
+    }
+
+    public String keyId() {
+      return keyId;
+    }
+
+    @Override
+    public void applyTo(TableMetadata.Builder builder) {
+      builder.removeEncryptionKey(keyId);
     }
   }
 }
