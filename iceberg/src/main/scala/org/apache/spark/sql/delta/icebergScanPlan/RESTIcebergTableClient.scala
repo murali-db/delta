@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-package io.delta.scan
+package org.apache.spark.sql.delta.icebergScanPlan
 
 import java.io.IOException
 import java.lang.reflect.Method
+import java.util.Locale
 
 import scala.jdk.CollectionConverters._
 
@@ -29,13 +30,12 @@ import org.apache.http.impl.client.HttpClientBuilder
 import org.apache.http.message.BasicHeader
 import shadedForDelta.org.apache.iceberg.PartitionSpec
 import shadedForDelta.org.apache.iceberg.rest.requests.{PlanTableScanRequest, PlanTableScanRequestParser}
-import shadedForDelta.org.apache.iceberg.rest.responses.{PlanTableScanResponse}
+import shadedForDelta.org.apache.iceberg.rest.responses.PlanTableScanResponse
 
-
-trait IcebergTableClient {
-  def planTableScan(namespace: String, table: String): PlanTableScanResponse
-}
-
+/**
+ * REST implementation of IcebergTableClient that calls Iceberg REST catalog server.
+ * This class lives in the iceberg module where Iceberg libraries are available.
+ */
 class RESTIcebergTableClient(
     icebergRestCatalogUriRoot: String,
     token: String) extends IcebergTableClient {
@@ -50,10 +50,7 @@ class RESTIcebergTableClient(
     .setDefaultHeaders(httpHeaders)
     .build();
 
-  override def planTableScan(
-    namespace: String,
-    table: String): PlanTableScanResponse = {
-
+  override def planTableScan(namespace: String, table: String): ScanPlan = {
     val planTableScanUri =
       s"$icebergRestCatalogUriRoot/v1/namespaces/$namespace/tables/$table/plan"
     val request = new PlanTableScanRequest.Builder().withSnapshotId(0).build()
@@ -63,11 +60,14 @@ class RESTIcebergTableClient(
     httpPost.setEntity(new StringEntity(requestJson, ContentType.APPLICATION_JSON))
     val httpResponse = httpClient.execute(httpPost)
     val partitionSpecById = Map(0 -> PartitionSpec.unpartitioned())
+
     try {
       val statusCode = httpResponse.getStatusLine.getStatusCode
       val responseBody = EntityUtils.toString(httpResponse.getEntity)
       if (statusCode == HttpStatus.SC_OK || statusCode == HttpStatus.SC_CREATED) {
-        parsePlanTableScanResponse(responseBody, partitionSpecById, caseSensitive = true)
+        val icebergResponse = parsePlanTableScanResponse(
+          responseBody, partitionSpecById, caseSensitive = true)
+        convertToScanPlan(icebergResponse)
       } else {
         throw new IOException(s"Failed to plan table scan. Status code: $statusCode, " +
           s"Response body: $responseBody")
@@ -75,6 +75,26 @@ class RESTIcebergTableClient(
     } finally {
       httpResponse.close()
     }
+  }
+
+  /**
+   * Convert Iceberg PlanTableScanResponse to simple ScanPlan data class.
+   */
+  private def convertToScanPlan(response: PlanTableScanResponse): ScanPlan = {
+    val files = response.fileScanTasks().asScala.map { task =>
+      ScanFile(
+        filePath = task.file().path().toString,
+        fileSizeInBytes = task.file().fileSizeInBytes(),
+        fileFormat = task.file().format().toString.toLowerCase(Locale.ROOT),
+        partitionData = Map.empty  // TODO: Extract partition data if needed
+      )
+    }.toSeq
+
+    // TODO: Extract schema from response properly
+    // For now, return empty JSON object as placeholder
+    val schemaJson = "{}"
+
+    ScanPlan(files = files, schema = schemaJson)
   }
 
   private def parsePlanTableScanResponse(

@@ -1,9 +1,8 @@
 package org.apache.spark.sql.delta
 
-
 import scala.jdk.CollectionConverters._
 
-import io.delta.scan.RESTIcebergTableClient
+import org.apache.spark.sql.delta.icebergScanPlan.RESTIcebergTableClient
 import org.eclipse.jetty.server.Server
 import org.eclipse.jetty.server.handler.gzip.GzipHandler
 import org.eclipse.jetty.servlet.ServletContextHandler
@@ -46,7 +45,12 @@ class IcebergPlanTableScanClientSuite extends AnyFunSuite with BeforeAndAfterAll
       // scalastyle:off println
       println("Table created: " + table)
       val icebergClient = new RESTIcebergTableClient(serverUri, null)
-      icebergClient.planTableScan(defaultNamespace.toString, "testTable")
+      val scanPlan = icebergClient.planTableScan(defaultNamespace.toString, "testTable")
+      println("Scan plan received with " + scanPlan.files.length + " files")
+      println("Schema: " + scanPlan.schema)
+      // Verify we get a valid scan plan back
+      assert(scanPlan != null)
+      assert(scanPlan.files != null)
       // scalastyle:on println
     }
   }
