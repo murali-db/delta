@@ -84,7 +84,7 @@ class RESTIcebergTableClient(
 
     // scalastyle:off classforname
     val parserClass = Class.forName(
-      "deltashaded.org.apache.iceberg.rest.responses.PlanTableScanResponseParser")
+      "shadedForDelta.org.apache.iceberg.rest.responses.PlanTableScanResponseParser")
     // scalastyle:on classforname
 
     val fromJsonMethod: Method = parserClass.getDeclaredMethod(

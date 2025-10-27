@@ -110,7 +110,8 @@ public class RESTCatalogServer {
     catalogContext = initializeBackendCatalog();
 
     RESTCatalogAdapter adapter = new RESTServerCatalogAdapter(catalogContext);
-    RESTCatalogServlet servlet = new RESTCatalogServlet(adapter);
+    // Use custom servlet that supports the /plan endpoint
+    RESTCatalogServlet servlet = new RESTCatalogServletWithPlanSupport(adapter);
 
     ServletContextHandler context = new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
     ServletHolder servletHolder = new ServletHolder(servlet);
