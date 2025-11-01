@@ -57,11 +57,23 @@ class RESTIcebergTableClient(
     val planTableScanUri =
       s"$icebergRestCatalogUriRoot/v1/namespaces/$namespace/tables/$table/plan"
 
-    // TODO: Parse filterJson and add to request
-    // For now, build request without filter
+    // Build base request with snapshot ID
     val request = new PlanTableScanRequest.Builder().withSnapshotId(0).build()
+    var requestJson = PlanTableScanRequestParser.toJson(request)
 
-    val requestJson = PlanTableScanRequestParser.toJson(request)
+    // Add filter to request JSON if provided
+    // Iceberg REST API expects: {"snapshot-id": 0, "filter": <expression-json>, ...}
+    filterJson.foreach { filter =>
+      // Parse the base request JSON and inject the filter field
+      // Simple approach: manually insert filter into JSON object
+      if (requestJson.endsWith("}")) {
+        val insertPoint = requestJson.lastIndexOf("}")
+        val prefix = requestJson.substring(0, insertPoint)
+        val needsComma = !prefix.trim.endsWith("{")
+        val comma = if (needsComma) "," else ""
+        requestJson = s"""$prefix$comma"filter":$filter}"""
+      }
+    }
     val httpPost = new HttpPost(planTableScanUri)
     httpPost.setEntity(new StringEntity(requestJson, ContentType.APPLICATION_JSON))
     val httpResponse = httpClient.execute(httpPost)
