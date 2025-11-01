@@ -29,7 +29,10 @@ import org.apache.spark.sql.functions.input_file_name
  */
 class SparkBasedIcebergTableClient(spark: SparkSession) extends IcebergTableClient {
 
-  override def planTableScan(namespace: String, table: String): ScanPlan = {
+  override def planTableScan(
+      namespace: String,
+      table: String,
+      filterJson: Option[String] = None): ScanPlan = {
     val fullTableName = s"$namespace.$table"
 
     // Clone the Spark session to avoid modifying the shared session's config
@@ -37,6 +40,8 @@ class SparkBasedIcebergTableClient(spark: SparkSession) extends IcebergTableClie
 
     // Disable force Iceberg scan planning in the cloned session to avoid infinite loop
     clonedSession.conf.set("spark.databricks.delta.catalog.forceIcebergScanPlanning", "false")
+
+    // TODO: Apply filterJson to table scan (for now, ignore filters)
 
     // Get the table schema
     val tableSchema = clonedSession.table(fullTableName).schema

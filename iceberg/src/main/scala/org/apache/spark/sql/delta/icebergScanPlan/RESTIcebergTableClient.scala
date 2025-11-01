@@ -50,9 +50,15 @@ class RESTIcebergTableClient(
     .setDefaultHeaders(httpHeaders)
     .build();
 
-  override def planTableScan(namespace: String, table: String): ScanPlan = {
+  override def planTableScan(
+      namespace: String,
+      table: String,
+      filterJson: Option[String] = None): ScanPlan = {
     val planTableScanUri =
       s"$icebergRestCatalogUriRoot/v1/namespaces/$namespace/tables/$table/plan"
+
+    // TODO: Parse filterJson and add to request
+    // For now, build request without filter
     val request = new PlanTableScanRequest.Builder().withSnapshotId(0).build()
 
     val requestJson = PlanTableScanRequestParser.toJson(request)

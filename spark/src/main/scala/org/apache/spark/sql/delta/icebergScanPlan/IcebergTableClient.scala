@@ -48,9 +48,13 @@ trait IcebergTableClient {
    *
    * @param namespace The namespace/database name
    * @param table The table name
+   * @param filterJson Optional Iceberg expression in JSON format for server-side filtering
    * @return ScanPlan containing files and schema
    */
-  def planTableScan(namespace: String, table: String): ScanPlan
+  def planTableScan(
+      namespace: String,
+      table: String,
+      filterJson: Option[String] = None): ScanPlan
 }
 
 /**

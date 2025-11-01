@@ -28,11 +28,15 @@ class MockIcebergTableClient(
       """{"type":"struct","fields":[{"name":"id","type":"integer","nullable":true}]}"""
 ) extends IcebergTableClient {
 
-  override def planTableScan(namespace: String, table: String): ScanPlan = {
+  override def planTableScan(
+      namespace: String,
+      table: String,
+      filterJson: Option[String] = None): ScanPlan = {
     val files = mockFiles.getOrElse(
       (namespace, table),
       throw new RuntimeException(s"No mock data configured for $namespace.$table")
     )
+    // For mock: ignore filters and return all files
     ScanPlan(files = files, schema = mockSchema)
   }
 }
