@@ -24,7 +24,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.delta.icebergScanPlan.IcebergTableClient
+import org.apache.spark.sql.delta.icebergScanPlan.{IcebergTableClient, SparkToIcebergConverter}
 import org.apache.spark.sql.connector.catalog.{SupportsRead, Table, TableCapability}
 import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.connector.read.SupportsPushDownFilters
@@ -119,9 +119,11 @@ class IcebergPlanScan(
   override def toBatch: Batch = this
 
   override def planInputPartitions(): Array[InputPartition] = {
-    // TODO: Convert pushedFilters to Iceberg expression format
-    // For now, call without filters (will add converter in next task)
-    val scanPlan = client.planTableScan(namespace, tableName)
+    // Convert pushed filters to Iceberg expression JSON format
+    val filterJson = SparkToIcebergConverter.convert(pushedFilters)
+
+    // Call planTableScan with optional filter JSON
+    val scanPlan = client.planTableScan(namespace, tableName, filterJson)
 
     // Convert each file to an InputPartition
     scanPlan.files.map { file =>
