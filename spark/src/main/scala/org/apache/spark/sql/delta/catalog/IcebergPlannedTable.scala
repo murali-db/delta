@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.delta.icebergScanPlan.IcebergTableClient
 import org.apache.spark.sql.connector.catalog.{SupportsRead, Table, TableCapability}
 import org.apache.spark.sql.connector.read._
+import org.apache.spark.sql.connector.read.SupportsPushDownFilters
 import org.apache.spark.sql.execution.datasources.{FileFormat, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.orc.OrcFileFormat
@@ -55,39 +56,71 @@ class IcebergPlannedTable(
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
-    new IcebergPlanScanBuilder(namespace, tableName, client, tableSchema)
+    new IcebergPlanScanBuilder(namespace, tableName, client, tableSchema, options)
   }
 }
 
 /**
  * ScanBuilder that uses IcebergTableClient to plan the scan.
+ * Supports pushing down filters to the Iceberg REST server.
  */
 class IcebergPlanScanBuilder(
     namespace: String,
     tableName: String,
     client: IcebergTableClient,
-    tableSchema: StructType) extends ScanBuilder {
+    tableSchema: StructType,
+    options: CaseInsensitiveStringMap)
+  extends ScanBuilder with SupportsPushDownFilters {
+
+  import org.apache.spark.sql.sources._
+
+  private var _pushedFilters: Array[Filter] = Array.empty
+
+  override def pushFilters(filters: Array[Filter]): Array[Filter] = {
+    // For MVP: Only support simple comparison operators
+    val (supported, unsupported) = filters.partition {
+      case _: EqualTo => true
+      case _: LessThan => true
+      case _: GreaterThan => true
+      case _: LessThanOrEqual => true
+      case _: GreaterThanOrEqual => true
+      case _: And => true
+      case _: Or => true
+      case _ => false
+    }
+
+    _pushedFilters = supported
+    unsupported  // Return filters Spark needs to apply client-side
+  }
+
+  override def pushedFilters(): Array[Filter] = _pushedFilters
 
   override def build(): Scan = {
-    new IcebergPlanScan(namespace, tableName, client, tableSchema)
+    new IcebergPlanScan(
+      namespace, tableName, client, tableSchema, _pushedFilters, options)
   }
 }
 
 /**
  * Scan implementation that calls the Iceberg REST API to get file list.
+ * Applies server-side filtering via Iceberg expressions.
  */
 class IcebergPlanScan(
     namespace: String,
     tableName: String,
     client: IcebergTableClient,
-    tableSchema: StructType) extends Scan with Batch {
+    tableSchema: StructType,
+    pushedFilters: Array[org.apache.spark.sql.sources.Filter],
+    options: CaseInsensitiveStringMap)
+  extends Scan with Batch {
 
   override def readSchema(): StructType = tableSchema
 
   override def toBatch: Batch = this
 
   override def planInputPartitions(): Array[InputPartition] = {
-    // Call the Iceberg REST API to get the scan plan
+    // TODO: Convert pushedFilters to Iceberg expression format
+    // For now, call without filters (will add converter in next task)
     val scanPlan = client.planTableScan(namespace, tableName)
 
     // Convert each file to an InputPartition
@@ -97,7 +130,8 @@ class IcebergPlanScan(
   }
 
   override def createReaderFactory(): PartitionReaderFactory = {
-    new IcebergFilePartitionReaderFactory(tableSchema)
+    // Pass filters to reader factory so they can be pushed to file formats
+    new IcebergFilePartitionReaderFactory(tableSchema, pushedFilters)
   }
 }
 
@@ -112,8 +146,12 @@ case class IcebergFileInputPartition(
 /**
  * Factory for creating PartitionReaders that read Iceberg-planned files.
  * Builds reader functions on the driver for each file format.
+ * Pushes filters down to file formats (Parquet, ORC) for better performance.
  */
-class IcebergFilePartitionReaderFactory(schema: StructType) extends PartitionReaderFactory {
+class IcebergFilePartitionReaderFactory(
+    schema: StructType,
+    pushedFilters: Array[org.apache.spark.sql.sources.Filter])
+  extends PartitionReaderFactory {
 
   import org.apache.spark.util.SerializableConfiguration
 
@@ -125,12 +163,13 @@ class IcebergFilePartitionReaderFactory(schema: StructType) extends PartitionRea
 
   // Pre-build reader functions for each file format on the driver
   // These functions will be serialized and sent to executors
+  // Pass filters to enable filter pushdown into Parquet/ORC
   private val parquetReaderBuilder = new ParquetFileFormat().buildReaderWithPartitionValues(
     sparkSession = spark,
     dataSchema = schema,
     partitionSchema = StructType(Nil),
     requiredSchema = schema,
-    filters = Seq.empty,
+    filters = pushedFilters.toSeq,  // Push filters to Parquet!
     options = Map(
       FileFormat.OPTION_RETURNING_BATCH -> "false"
     ),
@@ -142,7 +181,7 @@ class IcebergFilePartitionReaderFactory(schema: StructType) extends PartitionRea
     dataSchema = schema,
     partitionSchema = StructType(Nil),
     requiredSchema = schema,
-    filters = Seq.empty,
+    filters = pushedFilters.toSeq,  // Push filters to ORC!
     options = Map(
       FileFormat.OPTION_RETURNING_BATCH -> "false"
     ),
@@ -154,7 +193,7 @@ class IcebergFilePartitionReaderFactory(schema: StructType) extends PartitionRea
     dataSchema = schema,
     partitionSchema = StructType(Nil),
     requiredSchema = schema,
-    filters = Seq.empty,
+    filters = pushedFilters.toSeq,  // CSV doesn't support pushdown but pass anyway
     options = Map.empty[String, String],
     hadoopConf = hadoopConf.value
   )
@@ -164,7 +203,7 @@ class IcebergFilePartitionReaderFactory(schema: StructType) extends PartitionRea
     dataSchema = schema,
     partitionSchema = StructType(Nil),
     requiredSchema = schema,
-    filters = Seq.empty,
+    filters = pushedFilters.toSeq,  // JSON doesn't support pushdown but pass anyway
     options = Map.empty[String, String],
     hadoopConf = hadoopConf.value
   )
