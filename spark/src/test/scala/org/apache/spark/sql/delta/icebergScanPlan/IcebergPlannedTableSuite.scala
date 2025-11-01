@@ -19,7 +19,7 @@ package org.apache.spark.sql.delta.icebergScanPlan
 import java.util.Collections
 
 import org.apache.spark.sql.QueryTest
-import org.apache.spark.sql.delta.catalog.IcebergPlannedTable
+import org.apache.spark.sql.delta.catalog.{IcebergPlannedTable, IcebergPlanScanBuilder}
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
@@ -306,5 +306,153 @@ class IcebergPlannedTableSuite extends QueryTest with SharedSparkSession {
     IcebergTableClientFactory.clearFactory()
     assert(IcebergTableClientFactory.getFactory()
       .isInstanceOf[RESTIcebergTableClientFactory])
+  }
+
+  // ========== Unit Tests for Filter Pushdown ==========
+
+  test("filter pushdown - supported filters are pushed down") {
+    import org.apache.spark.sql.sources._
+
+    val schema = StructType(Seq(
+      StructField("id", IntegerType, nullable = true),
+      StructField("name", StringType, nullable = true)
+    ))
+
+    val mockClient = MockIcebergTableClient.withSingleFile(
+      "testdb", "test_table", "/path/file.parquet", 1000)
+
+    val table = new IcebergPlannedTable("testdb", "test_table", mockClient, schema)
+    val scanBuilder = table.newScanBuilder(
+      new CaseInsensitiveStringMap(Collections.emptyMap()))
+      .asInstanceOf[IcebergPlanScanBuilder]
+
+    // Test supported filters
+    val supportedFilters = Array[Filter](
+      EqualTo("id", 5),
+      LessThan("id", 10),
+      GreaterThan("id", 1),
+      LessThanOrEqual("id", 20),
+      GreaterThanOrEqual("id", 0)
+    )
+
+    val residual = scanBuilder.pushFilters(supportedFilters)
+
+    // All filters should be pushed (none residual)
+    assert(residual.isEmpty, "All supported filters should be pushed down")
+    assert(scanBuilder.pushedFilters().length == 5, "Should have 5 pushed filters")
+  }
+
+  test("filter pushdown - unsupported filters are returned as residual") {
+    import org.apache.spark.sql.sources._
+
+    val schema = StructType(Seq(
+      StructField("name", StringType, nullable = true)
+    ))
+
+    val mockClient = MockIcebergTableClient.withSingleFile(
+      "testdb", "test_table", "/path/file.parquet", 1000)
+
+    val table = new IcebergPlannedTable("testdb", "test_table", mockClient, schema)
+    val scanBuilder = table.newScanBuilder(
+      new CaseInsensitiveStringMap(Collections.emptyMap()))
+      .asInstanceOf[IcebergPlanScanBuilder]
+
+    // Test unsupported filters
+    val unsupportedFilters = Array[Filter](
+      StringStartsWith("name", "test"),
+      IsNull("name"),
+      IsNotNull("name")
+    )
+
+    val residual = scanBuilder.pushFilters(unsupportedFilters)
+
+    // All unsupported filters should be returned as residual
+    assert(residual.length == 3, "All unsupported filters should be residual")
+    assert(scanBuilder.pushedFilters().isEmpty, "No filters should be pushed")
+  }
+
+  test("filter pushdown - mixed supported and unsupported filters") {
+    import org.apache.spark.sql.sources._
+
+    val schema = StructType(Seq(
+      StructField("id", IntegerType, nullable = true),
+      StructField("name", StringType, nullable = true)
+    ))
+
+    val mockClient = MockIcebergTableClient.withSingleFile(
+      "testdb", "test_table", "/path/file.parquet", 1000)
+
+    val table = new IcebergPlannedTable("testdb", "test_table", mockClient, schema)
+    val scanBuilder = table.newScanBuilder(
+      new CaseInsensitiveStringMap(Collections.emptyMap()))
+      .asInstanceOf[IcebergPlanScanBuilder]
+
+    val mixedFilters = Array[Filter](
+      EqualTo("id", 5),              // Supported
+      StringStartsWith("name", "A"), // Unsupported
+      LessThan("id", 10),            // Supported
+      IsNull("name")                 // Unsupported
+    )
+
+    val residual = scanBuilder.pushFilters(mixedFilters)
+
+    // Should split correctly
+    assert(scanBuilder.pushedFilters().length == 2,
+      "Should push 2 supported filters")
+    assert(residual.length == 2,
+      "Should return 2 unsupported filters as residual")
+
+    // Verify pushed filters are the correct ones
+    assert(scanBuilder.pushedFilters().exists(_.isInstanceOf[EqualTo]),
+      "EqualTo should be pushed")
+    assert(scanBuilder.pushedFilters().exists(_.isInstanceOf[LessThan]),
+      "LessThan should be pushed")
+  }
+
+  test("filter pushdown - AND/OR compound filters are supported") {
+    import org.apache.spark.sql.sources._
+
+    val schema = StructType(Seq(
+      StructField("id", IntegerType, nullable = true)
+    ))
+
+    val mockClient = MockIcebergTableClient.withSingleFile(
+      "testdb", "test_table", "/path/file.parquet", 1000)
+
+    val table = new IcebergPlannedTable("testdb", "test_table", mockClient, schema)
+    val scanBuilder = table.newScanBuilder(
+      new CaseInsensitiveStringMap(Collections.emptyMap()))
+      .asInstanceOf[IcebergPlanScanBuilder]
+
+    val compoundFilters = Array[Filter](
+      And(EqualTo("id", 5), LessThan("id", 10)),
+      Or(EqualTo("id", 1), EqualTo("id", 2))
+    )
+
+    val residual = scanBuilder.pushFilters(compoundFilters)
+
+    // Compound filters should be pushed
+    assert(residual.isEmpty, "AND/OR filters should be pushed down")
+    assert(scanBuilder.pushedFilters().length == 2,
+      "Should have 2 compound filters pushed")
+  }
+
+  test("filter pushdown - no filters returns empty") {
+    val schema = StructType(Seq(
+      StructField("id", IntegerType, nullable = true)
+    ))
+
+    val mockClient = MockIcebergTableClient.withSingleFile(
+      "testdb", "test_table", "/path/file.parquet", 1000)
+
+    val table = new IcebergPlannedTable("testdb", "test_table", mockClient, schema)
+    val scanBuilder = table.newScanBuilder(
+      new CaseInsensitiveStringMap(Collections.emptyMap()))
+      .asInstanceOf[IcebergPlanScanBuilder]
+
+    val residual = scanBuilder.pushFilters(Array.empty)
+
+    assert(residual.isEmpty, "No filters should return empty residual")
+    assert(scanBuilder.pushedFilters().isEmpty, "No filters should be pushed")
   }
 }
