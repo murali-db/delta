@@ -455,4 +455,79 @@ class IcebergPlannedTableSuite extends QueryTest with SharedSparkSession {
     assert(residual.isEmpty, "No filters should return empty residual")
     assert(scanBuilder.pushedFilters().isEmpty, "No filters should be pushed")
   }
+
+  // ========== Tests for Filter Parameter (Task 2) ==========
+
+  test("filter parameter - MockIcebergTableClient accepts filter parameter") {
+    val schema = StructType(Seq(
+      StructField("id", IntegerType, nullable = true)
+    ))
+
+    val mockClient = MockIcebergTableClient.withSingleFile(
+      "testdb", "test_table", "/path/file.parquet", 1000)
+
+    // Call with no filter
+    val scanPlanNoFilter = mockClient.planTableScan("testdb", "test_table")
+    assert(scanPlanNoFilter.files.length == 1, "Should return 1 file with no filter")
+
+    // Call with filter (mock ignores it but should accept the parameter)
+    val testFilterJson = """{"type":"eq","term":"id","value":5}"""
+    val scanPlanWithFilter = mockClient.planTableScan("testdb", "test_table", Some(testFilterJson))
+    assert(scanPlanWithFilter.files.length == 1, "Mock should return 1 file even with filter")
+  }
+
+  test("filter parameter - SparkBasedIcebergTableClient accepts filter parameter") {
+    withTable("testdb.spark_based_test") {
+      sql("CREATE DATABASE IF NOT EXISTS testdb")
+      sql("""
+        CREATE TABLE testdb.spark_based_test (
+          id INT,
+          name STRING
+        ) USING parquet
+      """)
+
+      sql("""
+        INSERT INTO testdb.spark_based_test VALUES
+        (1, 'one'),
+        (2, 'two')
+      """)
+
+      val sparkClient = new SparkBasedIcebergTableClient(spark)
+
+      // Call with no filter
+      val scanPlanNoFilter = sparkClient.planTableScan("testdb", "spark_based_test")
+      assert(scanPlanNoFilter.files.nonEmpty, "Should discover files with no filter")
+
+      // Call with filter (currently ignored but should accept parameter)
+      val testFilterJson = """{"type":"eq","term":"id","value":1}"""
+      val scanPlanWithFilter = sparkClient.planTableScan(
+        "testdb", "spark_based_test", Some(testFilterJson))
+
+      // Since filter is not yet implemented, should return same files
+      assert(scanPlanWithFilter.files.length == scanPlanNoFilter.files.length,
+        "Filter not yet implemented, should return same files")
+    }
+  }
+
+  test("filter parameter - interface backward compatibility") {
+    val schema = StructType(Seq(
+      StructField("id", IntegerType, nullable = true)
+    ))
+
+    val mockClient = MockIcebergTableClient.withSingleFile(
+      "testdb", "test_table", "/path/file.parquet", 1000)
+
+    // Old style call without filter parameter should still work
+    val scanPlan1 = mockClient.planTableScan("testdb", "test_table")
+    assert(scanPlan1.files.length == 1, "Backward compatible call should work")
+
+    // New style call with explicit None
+    val scanPlan2 = mockClient.planTableScan("testdb", "test_table", None)
+    assert(scanPlan2.files.length == 1, "Explicit None should work")
+
+    // New style call with Some(filter)
+    val scanPlan3 = mockClient.planTableScan(
+      "testdb", "test_table", Some("""{"type":"eq","term":"id","value":5}"""))
+    assert(scanPlan3.files.length == 1, "With filter should work")
+  }
 }
