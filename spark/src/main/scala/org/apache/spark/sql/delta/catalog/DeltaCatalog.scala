@@ -44,6 +44,7 @@ import org.apache.spark.sql.delta.util.{Utils => DeltaUtils}
 import org.apache.spark.sql.delta.util.PartitionUtils
 import org.apache.spark.sql.util.ScalaExtensions._
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.delta.serverSidePlanning.ServerSidePlanningClientFactory
 
 import org.apache.spark.SparkException
 import org.apache.spark.internal.{Logging, MDC}
@@ -229,7 +230,35 @@ class DeltaCatalog extends DelegatingCatalogExtension
   override def loadTable(ident: Identifier): Table = recordFrameProfile(
       "DeltaCatalog", "loadTable") {
     try {
-      super.loadTable(ident) match {
+      val table = super.loadTable(ident)
+
+      // Check if we should force server-side planning (for testing)
+      val forceServerSidePlanning =
+        spark.conf.get(DeltaSQLConf.FORCE_SERVER_SIDE_PLANNING.key, "false").toBoolean
+
+      // Check if this is a Unity Catalog table without credentials OR force flag is set
+      if ((isUnityCatalog && !hasCredentials(table)) || forceServerSidePlanning) {
+        // Fallback: Use server-side scan planning
+        val namespace = ident.namespace().mkString(".")
+        val tableName = ident.name()
+
+        if (forceServerSidePlanning) {
+          logInfo(log"Forcing server-side planning for table " +
+            log"${MDC(DeltaLogKeys.TABLE_NAME, ident)}")
+        } else {
+          logInfo(log"Unity Catalog table ${MDC(DeltaLogKeys.TABLE_NAME, ident)} " +
+            log"has no credentials. Using server-side planning fallback.")
+        }
+
+        // Get client from factory (configurable for testing!)
+        val client = ServerSidePlanningClientFactory.createClient(spark)
+
+        // Return ServerSidePlannedTable instead of regular table
+        return new ServerSidePlannedTable(namespace, tableName, client, table.schema())
+      }
+
+      // Normal path: wrap Delta tables in DeltaTableV2
+      table match {
         case v1: V1Table if DeltaTableUtils.isDeltaTable(v1.catalogTable) =>
           DeltaTableV2(
             spark,
@@ -253,6 +282,26 @@ class DeltaCatalog extends DelegatingCatalogExtension
           log"identifier (${MDC(DeltaLogKeys.TABLE_NAME, ident)}) is path based.", e)
         newDeltaPathTable(ident)
     }
+  }
+
+  /**
+   * Check if a table has credentials available.
+   * Unity Catalog tables may lack credentials when accessed without proper permissions.
+   */
+  private def hasCredentials(table: Table): Boolean = {
+    // Check table properties for credential information
+    val properties = table.properties()
+
+    // Common property keys that indicate credentials are present
+    val credentialKeys = Seq(
+      "storage.credential",
+      "aws.temporary.credentials",
+      "azure.temporary.credentials",
+      "gcs.temporary.credentials",
+      "credential"
+    )
+
+    credentialKeys.exists(key => properties.containsKey(key))
   }
 
   override def loadTable(ident: Identifier, timestamp: Long): Table = {
