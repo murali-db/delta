@@ -52,7 +52,9 @@ class ServerSidePlanningTestClient(spark: SparkSession) extends ServerSidePlanni
     val filePaths = filesDF.collect().map(_.getString(0))
 
     // Get file metadata (size, format) from filesystem
+    // scalastyle:off deltahadoopconfiguration
     val hadoopConf = spark.sessionState.newHadoopConf()
+    // scalastyle:on deltahadoopconfiguration
     val files = filePaths.map { filePath =>
       val path = new Path(filePath)
       val fs = path.getFileSystem(hadoopConf)
@@ -70,7 +72,9 @@ class ServerSidePlanningTestClient(spark: SparkSession) extends ServerSidePlanni
   }
 
   private def getFileFormat(path: Path): String = {
+    // scalastyle:off caselocale
     val name = path.getName.toLowerCase
+    // scalastyle:on caselocale
     if (name.endsWith(".parquet")) "parquet"
     else if (name.endsWith(".orc")) "orc"
     else if (name.endsWith(".avro")) "avro"
