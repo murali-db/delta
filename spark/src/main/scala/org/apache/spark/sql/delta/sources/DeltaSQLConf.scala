@@ -2821,6 +2821,15 @@ trait DeltaSQLConfBase {
           |When enabled, it's decided by a per-command flag.""".stripMargin)
       .booleanConf
       .createWithDefault(false)
+
+  val FORCE_SERVER_SIDE_PLANNING =
+    buildConf("catalog.forceServerSidePlanning")
+      .internal()
+      .doc(
+        """When enabled, DeltaCatalog will always use server-side scan planning path
+          |instead of normal table loading. This is for testing purposes only.""".stripMargin)
+      .booleanConf
+      .createWithDefault(false)
 }
 
 object DeltaSQLConf extends DeltaSQLConfBase
