@@ -41,12 +41,12 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
  * doesn't provide credentials.
  */
 class ServerSidePlannedTable(
-    namespace: String,
+    database: String,
     tableName: String,
     client: ServerSidePlanningClient,
     tableSchema: StructType) extends Table with SupportsRead {
 
-  override def name(): String = s"$namespace.$tableName"
+  override def name(): String = s"$database.$tableName"
 
   override def schema(): StructType = tableSchema
 
@@ -55,7 +55,7 @@ class ServerSidePlannedTable(
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
-    new ServerSidePlannedScanBuilder(namespace, tableName, client, tableSchema)
+    new ServerSidePlannedScanBuilder(database, tableName, client, tableSchema)
   }
 }
 
@@ -63,13 +63,13 @@ class ServerSidePlannedTable(
  * ScanBuilder that uses ServerSidePlanningClient to plan the scan.
  */
 class ServerSidePlannedScanBuilder(
-    namespace: String,
+    database: String,
     tableName: String,
     client: ServerSidePlanningClient,
     tableSchema: StructType) extends ScanBuilder {
 
   override def build(): Scan = {
-    new ServerSidePlannedScan(namespace, tableName, client, tableSchema)
+    new ServerSidePlannedScan(database, tableName, client, tableSchema)
   }
 }
 
@@ -77,7 +77,7 @@ class ServerSidePlannedScanBuilder(
  * Scan implementation that calls the server-side planning API to get file list.
  */
 class ServerSidePlannedScan(
-    namespace: String,
+    database: String,
     tableName: String,
     client: ServerSidePlanningClient,
     tableSchema: StructType) extends Scan with Batch {
@@ -88,7 +88,7 @@ class ServerSidePlannedScan(
 
   override def planInputPartitions(): Array[InputPartition] = {
     // Call the server-side planning API to get the scan plan
-    val scanPlan = client.planScan(namespace, tableName)
+    val scanPlan = client.planScan(database, tableName)
 
     // Convert each file to an InputPartition
     scanPlan.files.map { file =>
