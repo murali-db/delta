@@ -36,6 +36,12 @@ import org.eclipse.jetty.servlet.ServletHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * HTTP server for testing Iceberg REST catalog operations with server-side scan planning support.
+ * Uses Jetty to serve REST catalog endpoints and extends the standard REST catalog with a /plan
+ * endpoint for server-side table scan planning. This implementation is suitable for integration
+ * tests and does not require external services.
+ */
 public class IcebergRESTServer {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergRESTServer.class);
 
@@ -47,7 +53,8 @@ public class IcebergRESTServer {
 
   private Server httpServer;
   private final Map<String, String> config;
-  private CatalogContext catalogContext;
+  private Catalog catalog;
+  private Map<String, String> catalogConfiguration;
 
   public IcebergRESTServer() {
     this.config = Maps.newHashMap();
@@ -57,25 +64,7 @@ public class IcebergRESTServer {
     this.config = config;
   }
 
-  static class CatalogContext {
-    private final Catalog catalog;
-    private final Map<String, String> configuration;
-
-    CatalogContext(Catalog catalog, Map<String, String> configuration) {
-      this.catalog = catalog;
-      this.configuration = configuration;
-    }
-
-    public Catalog catalog() {
-      return catalog;
-    }
-
-    public Map<String, String> configuration() {
-      return configuration;
-    }
-  }
-
-  private CatalogContext initializeBackendCatalog() throws IOException {
+  private void initializeBackendCatalog() throws IOException {
     // Translate environment variables to catalog properties
     Map<String, String> catalogProperties = Maps.newHashMap();
     catalogProperties.putAll(config);
@@ -101,27 +90,26 @@ public class IcebergRESTServer {
         PropertyUtil.propertyAsString(catalogProperties, CATALOG_NAME, CATALOG_NAME_DEFAULT);
 
     LOG.info("Creating {} catalog with properties: {}", catalogName, catalogProperties);
-    return new CatalogContext(
-        CatalogUtil.buildIcebergCatalog(catalogName, catalogProperties, new Configuration()),
-        catalogProperties);
+    this.catalog = CatalogUtil.buildIcebergCatalog(catalogName, catalogProperties, new Configuration());
+    this.catalogConfiguration = catalogProperties;
   }
 
   public void start(boolean join) throws Exception {
-    catalogContext = initializeBackendCatalog();
+    initializeBackendCatalog();
 
-    RESTCatalogAdapter adapter = new IcebergRESTServerCatalogAdapter(catalogContext);
+    RESTCatalogAdapter adapter = new IcebergRESTCatalogAdapterWithPlanSupport(catalog);
     // Use custom servlet that supports the /plan endpoint
     RESTCatalogServlet servlet = new IcebergRESTServletWithPlanSupport(adapter);
 
-    ServletContextHandler context = new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
+    ServletContextHandler servletContext = new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
     ServletHolder servletHolder = new ServletHolder(servlet);
-    context.addServlet(servletHolder, "/*");
-    context.insertHandler(new GzipHandler());
+    servletContext.addServlet(servletHolder, "/*");
+    servletContext.insertHandler(new GzipHandler());
 
     this.httpServer =
         new Server(
-            PropertyUtil.propertyAsInt(catalogContext.configuration, REST_PORT, REST_PORT_DEFAULT));
-    httpServer.setHandler(context);
+            PropertyUtil.propertyAsInt(catalogConfiguration, REST_PORT, REST_PORT_DEFAULT));
+    httpServer.setHandler(servletContext);
     for (Connector connector : httpServer.getConnectors()) {
       ((ServerConnector) connector).setReusePort(true);
     }
@@ -133,11 +121,11 @@ public class IcebergRESTServer {
   }
 
   public Catalog getCatalog() {
-    return catalogContext.catalog();
+    return catalog;
   }
 
   public Map<String, String> getConfiguration() {
-    return catalogContext.configuration();
+    return catalogConfiguration;
   }
 
   public int getPort() {

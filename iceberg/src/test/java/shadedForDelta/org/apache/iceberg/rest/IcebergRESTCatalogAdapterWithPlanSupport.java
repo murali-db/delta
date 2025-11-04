@@ -37,14 +37,20 @@ import shadedForDelta.org.apache.iceberg.rest.responses.PlanTableScanResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-class IcebergRESTServerCatalogAdapter extends RESTCatalogAdapter {
-  private static final Logger LOG = LoggerFactory.getLogger(IcebergRESTServerCatalogAdapter.class);
+/**
+ * Extends RESTCatalogAdapter to add support for server-side scan planning via the /plan endpoint.
+ * This adapter intercepts /plan requests and handles them by executing Iceberg table scans locally,
+ * returning file scan tasks to the client. Other catalog operations are delegated to the parent
+ * RESTCatalogAdapter implementation.
+ */
+class IcebergRESTCatalogAdapterWithPlanSupport extends RESTCatalogAdapter {
+  private static final Logger LOG = LoggerFactory.getLogger(IcebergRESTCatalogAdapterWithPlanSupport.class);
 
-  private final IcebergRESTServer.CatalogContext catalogContext;
+  private final Catalog catalog;
 
-  IcebergRESTServerCatalogAdapter(IcebergRESTServer.CatalogContext catalogContext) {
-    super(catalogContext.catalog());
-    this.catalogContext = catalogContext;
+  IcebergRESTCatalogAdapterWithPlanSupport(Catalog catalog) {
+    super(catalog);
+    this.catalog = catalog;
   }
 
   @Override
@@ -130,7 +136,6 @@ class IcebergRESTServerCatalogAdapter extends RESTCatalogAdapter {
     LOG.debug("Plan request parsed: snapshotId={}", planRequest.snapshotId());
 
     // 3. Load table from catalog
-    Catalog catalog = catalogContext.catalog();
     Table table = catalog.loadTable(tableIdent);
     LOG.debug("Table loaded: {}", table);
 
@@ -145,22 +150,40 @@ class IcebergRESTServerCatalogAdapter extends RESTCatalogAdapter {
       LOG.debug("Using current snapshot (snapshotId was null or 0)");
     }
 
-    // TODO: Apply filters, column selections, etc. from planRequest
-    // if (planRequest.filter() != null) { ... }
-    // if (planRequest.selectedColumns() != null) { ... }
+    // 6. Validate that unsupported features are not requested
+    if (planRequest.filter() != null) {
+      throw new UnsupportedOperationException(
+          "Filter pushdown is not supported in this test implementation");
+    }
+    if (planRequest.select() != null && !planRequest.select().isEmpty()) {
+      throw new UnsupportedOperationException(
+          "Column selection/projection is not supported in this test implementation");
+    }
+    if (planRequest.startSnapshotId() != null) {
+      throw new UnsupportedOperationException(
+          "Incremental scans are not supported in this test implementation");
+    }
+    if (planRequest.endSnapshotId() != null) {
+      throw new UnsupportedOperationException(
+          "Incremental scans are not supported in this test implementation");
+    }
+    if (planRequest.statsFields() != null && !planRequest.statsFields().isEmpty()) {
+      throw new UnsupportedOperationException(
+          "Column stats are not supported in this test implementation");
+    }
 
-    // 6. Execute scan planning
+    // 7. Execute scan planning
     List<FileScanTask> fileScanTasks = new ArrayList<>();
     try (CloseableIterable<FileScanTask> tasks = tableScan.planFiles()) {
       tasks.forEach(task -> fileScanTasks.add(task));
     }
     LOG.debug("Planned {} file scan tasks", fileScanTasks.size());
 
-    // 7. Get partition specs for serialization
+    // 8. Get partition specs for serialization
     Map<Integer, shadedForDelta.org.apache.iceberg.PartitionSpec> specsById = table.specs();
     LOG.debug("Table has {} partition specs", specsById.size());
 
-    // 8. Build response (Pattern 1: COMPLETED with direct tasks)
+    // 9. Build response (Pattern 1: COMPLETED with direct tasks)
     return PlanTableScanResponse.builder()
         .withPlanStatus(PlanStatus.COMPLETED)
         .withFileScanTasks(fileScanTasks)
