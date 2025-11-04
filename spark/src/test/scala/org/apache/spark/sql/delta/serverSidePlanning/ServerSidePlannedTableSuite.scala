@@ -35,14 +35,14 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
     ))
 
     val mockClient = MockServerSidePlanningClient.withSingleFile(
-      namespace = "testdb",
+      database = "testdb",
       table = "testtable",
       filePath = "/path/to/data/file1.parquet",
       fileSize = 1000
     )
 
     val table = new ServerSidePlannedTable(
-      namespace = "testdb",
+      database = "testdb",
       tableName = "testtable",
       client = mockClient,
       tableSchema = schema
@@ -62,14 +62,14 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
     ))
 
     val mockClient = MockServerSidePlanningClient.withSingleFile(
-      namespace = "testdb",
+      database = "testdb",
       table = "testtable",
       filePath = "/path/to/data/file1.parquet",
       fileSize = 1000
     )
 
     val table = new ServerSidePlannedTable(
-      namespace = "testdb",
+      database = "testdb",
       tableName = "testtable",
       client = mockClient,
       tableSchema = schema
@@ -106,13 +106,13 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
     )
 
     val mockClient = MockServerSidePlanningClient.withFiles(
-      namespace = "testdb",
+      database = "testdb",
       table = "multitable",
       files = files
     )
 
     val table = new ServerSidePlannedTable(
-      namespace = "testdb",
+      database = "testdb",
       tableName = "multitable",
       client = mockClient,
       tableSchema = schema
@@ -140,7 +140,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
     val mockClient = new MockServerSidePlanningClient()
 
     val table = new ServerSidePlannedTable(
-      namespace = "testdb",
+      database = "testdb",
       tableName = "nonexistent",
       client = mockClient,
       tableSchema = schema
@@ -190,15 +190,12 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         assert(scanPlan.files.forall(_.fileFormat == "parquet"),
           "Parquet tables use parquet format")
 
-        // Verify we can parse the schema
-        assert(scanPlan.schema.contains("id"))
-        assert(scanPlan.schema.contains("name"))
+        // Get the table schema from the actual table
+        val tableSchema = spark.table("testdb.test_table").schema
 
-        // Create ServerSidePlannedTable using schema from scan plan
-        val tableSchema = org.apache.spark.sql.types.DataType
-          .fromJson(scanPlan.schema).asInstanceOf[StructType]
+        // Create ServerSidePlannedTable using schema from the table
         val table = new ServerSidePlannedTable(
-          namespace = "testdb",
+          database = "testdb",
           tableName = "test_table",
           client = client,
           tableSchema = tableSchema
@@ -288,7 +285,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
   test("ServerSidePlanningClientFactory registry works correctly") {
     // Verify default factory
     assert(ServerSidePlanningClientFactory.getFactory()
-      .isInstanceOf[RESTServerSidePlanningClientFactory])
+      .isInstanceOf[IcebergRESTCatalogPlanningClientFactory])
 
     // Set custom factory
     val mockClient = MockServerSidePlanningClient.withSingleFile(
@@ -305,6 +302,6 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
     // Clear and verify back to default
     ServerSidePlanningClientFactory.clearFactory()
     assert(ServerSidePlanningClientFactory.getFactory()
-      .isInstanceOf[RESTServerSidePlanningClientFactory])
+      .isInstanceOf[IcebergRESTCatalogPlanningClientFactory])
   }
 }
