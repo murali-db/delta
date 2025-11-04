@@ -36,7 +36,7 @@ import shadedForDelta.org.apache.iceberg.rest.responses.PlanTableScanResponse
  * Iceberg REST implementation of ServerSidePlanningClient that calls Iceberg REST catalog server.
  * This class lives in the iceberg module where Iceberg libraries are available.
  */
-class IcebergServerSidePlanningClient(
+class IcebergRESTCatalogPlanningClient(
     icebergRestCatalogUriRoot: String,
     token: String) extends ServerSidePlanningClient {
 
@@ -50,9 +50,9 @@ class IcebergServerSidePlanningClient(
     .setDefaultHeaders(httpHeaders)
     .build();
 
-  override def planScan(namespace: String, table: String): ScanPlan = {
+  override def planScan(database: String, table: String): ScanPlan = {
     val planTableScanUri =
-      s"$icebergRestCatalogUriRoot/v1/namespaces/$namespace/tables/$table/plan"
+      s"$icebergRestCatalogUriRoot/v1/namespaces/$database/tables/$table/plan"
     val request = new PlanTableScanRequest.Builder().withSnapshotId(0).build()
 
     val requestJson = PlanTableScanRequestParser.toJson(request)
@@ -82,19 +82,23 @@ class IcebergServerSidePlanningClient(
    */
   private def convertToScanPlan(response: PlanTableScanResponse): ScanPlan = {
     val files = response.fileScanTasks().asScala.map { task =>
+      val file = task.file()
+
+      // Validate that table is unpartitioned - partitioned tables not supported yet
+      if (file.partition().size() > 0) {
+        throw new UnsupportedOperationException(
+          s"Partitioned tables are not supported yet. " +
+          s"Table has partition data: ${file.partition()}")
+      }
+
       ScanFile(
-        filePath = task.file().path().toString,
-        fileSizeInBytes = task.file().fileSizeInBytes(),
-        fileFormat = task.file().format().toString.toLowerCase(Locale.ROOT),
-        partitionData = Map.empty  // TODO: Extract partition data if needed
+        filePath = file.path().toString,
+        fileSizeInBytes = file.fileSizeInBytes(),
+        fileFormat = file.format().toString.toLowerCase(Locale.ROOT)
       )
     }.toSeq
 
-    // TODO: Extract schema from response properly
-    // For now, return empty JSON object as placeholder
-    val schemaJson = "{}"
-
-    ScanPlan(files = files, schema = schemaJson)
+    ScanPlan(files = files)
   }
 
   private def parsePlanTableScanResponse(

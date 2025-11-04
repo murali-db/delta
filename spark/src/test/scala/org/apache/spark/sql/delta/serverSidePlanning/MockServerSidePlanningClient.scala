@@ -23,17 +23,15 @@ import org.apache.spark.sql.SparkSession
  * Returns pre-configured file lists without requiring a real server.
  */
 class MockServerSidePlanningClient(
-    mockFiles: Map[(String, String), Seq[ScanFile]] = Map.empty,
-    mockSchema: String =
-      """{"type":"struct","fields":[{"name":"id","type":"integer","nullable":true}]}"""
+    mockFiles: Map[(String, String), Seq[ScanFile]] = Map.empty
 ) extends ServerSidePlanningClient {
 
-  override def planScan(namespace: String, table: String): ScanPlan = {
+  override def planScan(database: String, table: String): ScanPlan = {
     val files = mockFiles.getOrElse(
-      (namespace, table),
-      throw new RuntimeException(s"No mock data configured for $namespace.$table")
+      (database, table),
+      throw new RuntimeException(s"No mock data configured for $database.$table")
     )
-    ScanPlan(files = files, schema = mockSchema)
+    ScanPlan(files = files)
   }
 }
 
@@ -42,27 +40,26 @@ object MockServerSidePlanningClient {
    * Creates a mock client with a simple single-file scan plan.
    */
   def withSingleFile(
-      namespace: String,
+      database: String,
       table: String,
       filePath: String,
       fileSize: Long = 1000): MockServerSidePlanningClient = {
     val file = ScanFile(
       filePath = filePath,
       fileSizeInBytes = fileSize,
-      fileFormat = "parquet",
-      partitionData = Map.empty
+      fileFormat = "parquet"
     )
-    new MockServerSidePlanningClient(Map((namespace, table) -> Seq(file)))
+    new MockServerSidePlanningClient(Map((database, table) -> Seq(file)))
   }
 
   /**
    * Creates a mock client with multiple files.
    */
   def withFiles(
-      namespace: String,
+      database: String,
       table: String,
       files: Seq[ScanFile]): MockServerSidePlanningClient = {
-    new MockServerSidePlanningClient(Map((namespace, table) -> files))
+    new MockServerSidePlanningClient(Map((database, table) -> files))
   }
 }
 

@@ -25,16 +25,14 @@ import org.apache.spark.sql.SparkSession
 case class ScanFile(
   filePath: String,
   fileSizeInBytes: Long,
-  fileFormat: String,  // "parquet", "orc", etc.
-  partitionData: Map[String, String] = Map.empty
+  fileFormat: String  // "parquet", "orc", etc.
 )
 
 /**
  * Result of a table scan plan operation.
  */
 case class ScanPlan(
-  files: Seq[ScanFile],
-  schema: String  // JSON-encoded schema
+  files: Seq[ScanFile]
 )
 
 /**
@@ -46,11 +44,11 @@ trait ServerSidePlanningClient {
   /**
    * Plan a table scan and return the list of files to read.
    *
-   * @param namespace The namespace/database name
+   * @param database The database or schema name
    * @param table The table name
-   * @return ScanPlan containing files and schema
+   * @return ScanPlan containing files to read
    */
-  def planScan(namespace: String, table: String): ScanPlan
+  def planScan(database: String, table: String): ScanPlan
 }
 
 /**
@@ -62,10 +60,10 @@ trait ServerSidePlanningClientFactory {
 }
 
 /**
- * Default factory that uses reflection to load IcebergServerSidePlanningClient
+ * Default factory that uses reflection to load IcebergRESTCatalogPlanningClient
  * from the iceberg module (if available).
  */
-class IcebergServerSidePlanningClientFactory extends ServerSidePlanningClientFactory {
+class IcebergRESTCatalogPlanningClientFactory extends ServerSidePlanningClientFactory {
   override def createClient(spark: SparkSession): ServerSidePlanningClient = {
     val catalogUri = spark.conf.get("spark.delta.iceberg.rest.catalog.uri", "")
     val token = spark.conf.get("spark.delta.iceberg.rest.catalog.token", "")
@@ -79,7 +77,7 @@ class IcebergServerSidePlanningClientFactory extends ServerSidePlanningClientFac
     // Use reflection to avoid compile-time dependency on iceberg module
     // scalastyle:off classforname
     val clientClass = Class.forName(
-      "org.apache.spark.sql.delta.serverSidePlanning.IcebergServerSidePlanningClient")
+      "org.apache.spark.sql.delta.serverSidePlanning.IcebergRESTCatalogPlanningClient")
     // scalastyle:on classforname
     val constructor = clientClass.getConstructor(classOf[String], classOf[String])
     constructor.newInstance(catalogUri, token).asInstanceOf[ServerSidePlanningClient]
@@ -110,7 +108,7 @@ object ServerSidePlanningClientFactory {
    * Get the current factory (custom or default).
    */
   def getFactory(): ServerSidePlanningClientFactory = {
-    customFactory.getOrElse(new IcebergServerSidePlanningClientFactory())
+    customFactory.getOrElse(new IcebergRESTCatalogPlanningClientFactory())
   }
 
   /**

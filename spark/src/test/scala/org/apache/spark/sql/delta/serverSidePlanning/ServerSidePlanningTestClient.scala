@@ -29,22 +29,12 @@ import org.apache.spark.sql.functions.input_file_name
  */
 class ServerSidePlanningTestClient(spark: SparkSession) extends ServerSidePlanningClient {
 
-  override def planScan(namespace: String, table: String): ScanPlan = {
-    val fullTableName = s"$namespace.$table"
-
-    // Clone the Spark session to avoid modifying the shared session's config
-    val clonedSession = spark.cloneSession()
-
-    // Disable force server-side planning in the cloned session to avoid infinite loop
-    clonedSession.conf.set("spark.databricks.delta.catalog.forceServerSidePlanning", "false")
-
-    // Get the table schema
-    val tableSchema = clonedSession.table(fullTableName).schema
-    val schemaJson = tableSchema.json
+  override def planScan(database: String, table: String): ScanPlan = {
+    val fullTableName = s"$database.$table"
 
     // Use input_file_name() to get the list of files
     // Query: SELECT DISTINCT input_file_name() FROM table
-    val filesDF = clonedSession.table(fullTableName)
+    val filesDF = spark.table(fullTableName)
       .select(input_file_name().as("file_path"))
       .distinct()
 
@@ -61,12 +51,11 @@ class ServerSidePlanningTestClient(spark: SparkSession) extends ServerSidePlanni
       ScanFile(
         filePath = filePath,
         fileSizeInBytes = fileStatus.getLen,
-        fileFormat = getFileFormat(path),
-        partitionData = Map.empty // Could extract from path if needed
+        fileFormat = getFileFormat(path)
       )
     }.toSeq
 
-    ScanPlan(files = files, schema = schemaJson)
+    ScanPlan(files = files)
   }
 
   private def getFileFormat(path: Path): String = {
