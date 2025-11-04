@@ -16,6 +16,8 @@
 
 package org.apache.spark.sql.delta.serverSidePlanning
 
+import java.util.Locale
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions.input_file_name
@@ -62,7 +64,7 @@ class ServerSidePlanningTestClient(spark: SparkSession) extends ServerSidePlanni
 
   private def getFileFormat(path: Path): String = {
     // scalastyle:off caselocale
-    val name = path.getName.toLowerCase
+    val name = path.getName.toLowerCase(Locale.ROOT)
     // scalastyle:on caselocale
     if (name.endsWith(".parquet")) "parquet"
     else if (name.endsWith(".orc")) "orc"
