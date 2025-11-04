@@ -234,7 +234,7 @@ class DeltaCatalog extends DelegatingCatalogExtension
 
       // Check if we should force server-side planning (for testing)
       val forceServerSidePlanning =
-        spark.conf.get(DeltaSQLConf.FORCE_SERVER_SIDE_PLANNING.key, "false").toBoolean
+        spark.conf.get(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "false").toBoolean
 
       // Check if this is a Unity Catalog table without credentials OR force flag is set
       if ((isUnityCatalog && !hasCredentials(table)) || forceServerSidePlanning) {
@@ -250,8 +250,17 @@ class DeltaCatalog extends DelegatingCatalogExtension
             log"has no credentials. Using server-side planning fallback.")
         }
 
-        // Get client from factory (configurable for testing!)
-        val client = ServerSidePlanningClientFactory.createClient(spark)
+        // Extract catalog name from identifier namespace, or default to spark_catalog
+        // For fully qualified identifiers like catalog.database.table,
+        // namespace() returns ["catalog", "database"]
+        val catalogName = if (ident.namespace().length > 1) {
+          ident.namespace().head
+        } else {
+          "spark_catalog"
+        }
+
+        // Get client from factory using catalog-specific configuration
+        val client = ServerSidePlanningClientFactory.buildForCatalog(spark, catalogName)
 
         // Return ServerSidePlannedTable instead of regular table
         return new ServerSidePlannedTable(namespace, tableName, client, table.schema())
