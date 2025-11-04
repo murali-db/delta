@@ -288,7 +288,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
   test("ServerSidePlanningClientFactory registry works correctly") {
     // Verify default factory
     assert(ServerSidePlanningClientFactory.getFactory()
-      .isInstanceOf[RESTServerSidePlanningClientFactory])
+      .isInstanceOf[IcebergServerSidePlanningClientFactory])
 
     // Set custom factory
     val mockClient = MockServerSidePlanningClient.withSingleFile(
@@ -305,6 +305,6 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
     // Clear and verify back to default
     ServerSidePlanningClientFactory.clearFactory()
     assert(ServerSidePlanningClientFactory.getFactory()
-      .isInstanceOf[RESTServerSidePlanningClientFactory])
+      .isInstanceOf[IcebergServerSidePlanningClientFactory])
   }
 }
