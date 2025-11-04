@@ -69,4 +69,8 @@ object MockServerSidePlanningClient {
 class MockServerSidePlanningClientFactory(client: MockServerSidePlanningClient)
     extends ServerSidePlanningClientFactory {
   override def createClient(spark: SparkSession): ServerSidePlanningClient = client
+
+  override def buildForCatalog(
+      spark: SparkSession,
+      catalogName: String): ServerSidePlanningClient = client
 }

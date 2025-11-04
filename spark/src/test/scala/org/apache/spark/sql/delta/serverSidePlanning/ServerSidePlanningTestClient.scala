@@ -74,4 +74,10 @@ class ServerSidePlanningTestClientFactory extends ServerSidePlanningClientFactor
   override def createClient(spark: SparkSession): ServerSidePlanningClient = {
     new ServerSidePlanningTestClient(spark)
   }
+
+  override def buildForCatalog(
+      spark: SparkSession,
+      catalogName: String): ServerSidePlanningClient = {
+    new ServerSidePlanningTestClient(spark)
+  }
 }

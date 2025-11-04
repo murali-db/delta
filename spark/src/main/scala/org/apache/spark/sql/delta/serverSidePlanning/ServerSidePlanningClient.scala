@@ -57,6 +57,17 @@ trait ServerSidePlanningClient {
  */
 trait ServerSidePlanningClientFactory {
   def createClient(spark: SparkSession): ServerSidePlanningClient
+
+  /**
+   * Create a client for a specific catalog by reading catalog-specific configuration.
+   * This method reads configuration from spark.sql.catalog.<catalogName>.uri and
+   * spark.sql.catalog.<catalogName>.token.
+   *
+   * @param spark The SparkSession
+   * @param catalogName The name of the catalog (e.g., "spark_catalog", "unity")
+   * @return A ServerSidePlanningClient configured for the specified catalog
+   */
+  def buildForCatalog(spark: SparkSession, catalogName: String): ServerSidePlanningClient
 }
 
 /**
@@ -74,6 +85,27 @@ class IcebergRESTCatalogPlanningClientFactory extends ServerSidePlanningClientFa
         "Please set spark.delta.iceberg.rest.catalog.uri")
     }
 
+    createClientWithUriAndToken(catalogUri, token)
+  }
+
+  override def buildForCatalog(
+      spark: SparkSession,
+      catalogName: String): ServerSidePlanningClient = {
+    val catalogUri = spark.conf.get(s"spark.sql.catalog.$catalogName.uri", "")
+    val token = spark.conf.get(s"spark.sql.catalog.$catalogName.token", "")
+
+    if (catalogUri.isEmpty) {
+      throw new IllegalStateException(
+        s"Catalog URI not configured for catalog '$catalogName'. " +
+        s"Please set spark.sql.catalog.$catalogName.uri")
+    }
+
+    createClientWithUriAndToken(catalogUri, token)
+  }
+
+  private def createClientWithUriAndToken(
+      catalogUri: String,
+      token: String): ServerSidePlanningClient = {
     // Use reflection to avoid compile-time dependency on iceberg module
     // scalastyle:off classforname
     val clientClass = Class.forName(
@@ -116,5 +148,12 @@ object ServerSidePlanningClientFactory {
    */
   def createClient(spark: SparkSession): ServerSidePlanningClient = {
     getFactory().createClient(spark)
+  }
+
+  /**
+   * Convenience method to create a client for a specific catalog using the current factory.
+   */
+  def buildForCatalog(spark: SparkSession, catalogName: String): ServerSidePlanningClient = {
+    getFactory().buildForCatalog(spark, catalogName)
   }
 }
