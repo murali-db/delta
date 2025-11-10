@@ -63,6 +63,8 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
       // Verify we get a valid scan plan back
       assert(scanPlan != null)
       assert(scanPlan.files != null)
+      // Empty table should have 0 files
+      assert(scanPlan.files.isEmpty, s"Expected 0 files for empty table, got ${scanPlan.files.length}")
     }
   }
 
