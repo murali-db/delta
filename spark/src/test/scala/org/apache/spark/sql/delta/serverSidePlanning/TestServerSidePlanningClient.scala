@@ -48,12 +48,14 @@ class TestServerSidePlanningClient(spark: SparkSession) extends ServerSidePlanni
     val hadoopConf = spark.sessionState.newHadoopConf()
     // scalastyle:on deltahadoopconfiguration
     val files = filePaths.map { filePath =>
-      val path = new Path(filePath)
+      // input_file_name() returns URL-encoded paths, decode them
+      val decodedPath = java.net.URLDecoder.decode(filePath, "UTF-8")
+      val path = new Path(decodedPath)
       val fs = path.getFileSystem(hadoopConf)
       val fileStatus = fs.getFileStatus(path)
 
       ScanFile(
-        filePath = filePath,
+        filePath = decodedPath,
         fileSizeInBytes = fileStatus.getLen,
         fileFormat = getFileFormat(path)
       )

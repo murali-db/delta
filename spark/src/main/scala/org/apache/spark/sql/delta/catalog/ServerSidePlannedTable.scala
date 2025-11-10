@@ -24,7 +24,6 @@ import scala.collection.JavaConverters._
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.delta.DeltaLog
 import org.apache.spark.sql.delta.serverSidePlanning.ServerSidePlanningClient
 import org.apache.spark.sql.connector.catalog.{SupportsRead, Table, TableCapability}
 import org.apache.spark.sql.connector.read._
@@ -38,7 +37,7 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
  * to get the list of files to read. Used as a fallback when Unity Catalog
  * doesn't provide credentials.
  *
- * Similar to DeltaTableV2, we accept SparkSession and DeltaLog as constructor parameters
+ * Similar to DeltaTableV2, we accept SparkSession as a constructor parameter
  * since Tables are created on the driver and are not serialized to executors.
  */
 class ServerSidePlannedTable(
@@ -46,8 +45,7 @@ class ServerSidePlannedTable(
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient,
-    deltaLog: DeltaLog) extends Table with SupportsRead {
+    planningClient: ServerSidePlanningClient) extends Table with SupportsRead {
 
   // Returns fully qualified name (e.g., "catalog.database.table").
   // The database parameter receives ident.namespace().mkString(".") from DeltaCatalog,
@@ -61,8 +59,7 @@ class ServerSidePlannedTable(
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
-    new ServerSidePlannedScanBuilder(
-      spark, database, tableName, tableSchema, planningClient, deltaLog)
+    new ServerSidePlannedScanBuilder(spark, database, tableName, tableSchema, planningClient)
   }
 }
 
@@ -74,11 +71,10 @@ class ServerSidePlannedScanBuilder(
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient,
-    deltaLog: DeltaLog) extends ScanBuilder {
+    planningClient: ServerSidePlanningClient) extends ScanBuilder {
 
   override def build(): Scan = {
-    new ServerSidePlannedScan(spark, database, tableName, tableSchema, planningClient, deltaLog)
+    new ServerSidePlannedScan(spark, database, tableName, tableSchema, planningClient)
   }
 }
 
@@ -90,8 +86,7 @@ class ServerSidePlannedScan(
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient,
-    deltaLog: DeltaLog) extends Scan with Batch {
+    planningClient: ServerSidePlanningClient) extends Scan with Batch {
 
   override def readSchema(): StructType = tableSchema
 
@@ -108,7 +103,7 @@ class ServerSidePlannedScan(
   }
 
   override def createReaderFactory(): PartitionReaderFactory = {
-    new ServerSidePlannedFilePartitionReaderFactory(spark, tableSchema, deltaLog)
+    new ServerSidePlannedFilePartitionReaderFactory(spark, tableSchema)
   }
 }
 
@@ -126,15 +121,19 @@ case class ServerSidePlannedFileInputPartition(
  */
 class ServerSidePlannedFilePartitionReaderFactory(
     spark: SparkSession,
-    schema: StructType,
-    deltaLog: DeltaLog)
+    schema: StructType)
     extends PartitionReaderFactory {
 
   import org.apache.spark.util.SerializableConfiguration
 
-  // Get Hadoop configuration from DeltaLog on driver
-  // This includes DataFrame options like custom S3 credentials
-  private val hadoopConf = new SerializableConfiguration(deltaLog.newDeltaHadoopConf())
+  // scalastyle:off deltahadoopconfiguration
+  // We use sessionState.newHadoopConf() here instead of deltaLog.newDeltaHadoopConf().
+  // This means DataFrame options (like custom S3 credentials) passed by users will NOT be
+  // included in the Hadoop configuration. This would fail if users specify credentials in
+  // DataFrame read options expecting them to be used when accessing the underlying files.
+  // However, for now we accept this limitation to avoid requiring a DeltaLog parameter.
+  private val hadoopConf = new SerializableConfiguration(spark.sessionState.newHadoopConf())
+  // scalastyle:on deltahadoopconfiguration
 
   // Pre-build reader function for Parquet on the driver
   // This function will be serialized and sent to executors

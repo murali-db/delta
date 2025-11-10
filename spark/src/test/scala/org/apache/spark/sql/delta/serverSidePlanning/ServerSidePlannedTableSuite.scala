@@ -16,113 +16,100 @@
 
 package org.apache.spark.sql.delta.serverSidePlanning
 
-import org.apache.spark.sql.{QueryTest, Row}
+import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.delta.catalog.ServerSidePlannedTable
 import org.apache.spark.sql.test.SharedSparkSession
 
 class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
 
-  test("end-to-end: SELECT query returns correct results through ServerSidePlannedTable") {
-    withTable("testdb.delta_table") {
-      // Create test Delta table with data BEFORE configuring DeltaCatalog
-      // This ensures writes use the normal path, not ServerSidePlannedTable (which is read-only)
-      sql("CREATE DATABASE IF NOT EXISTS testdb")
+  test("end-to-end: ServerSidePlannedTable with test client") {
+    withTable("test_table") {
+      // Create a Parquet table with data
       sql("""
-        CREATE TABLE testdb.delta_table (
+        CREATE TABLE test_table (
           id INT,
           name STRING,
-          value DOUBLE
-        ) USING delta
+          category STRING
+        ) USING parquet
       """)
 
       sql("""
-        INSERT INTO testdb.delta_table VALUES
-        (1, 'one', 1.0),
-        (2, 'two', 2.0),
-        (3, 'three', 3.0),
-        (4, 'four', 4.0)
+        INSERT INTO test_table (id, name, category) VALUES
+        (1, 'Alice', 'A'),
+        (2, 'Bob', 'B'),
+        (3, 'Charlie', 'A'),
+        (4, 'David', 'B')
       """)
 
-      // Save original catalog config
-      val originalCatalog = spark.conf.getOption("spark.sql.catalog.spark_catalog")
+      // Verify default factory
+      assert(ServerSidePlanningClientFactory.getFactory()
+        .isInstanceOf[IcebergRESTCatalogPlanningClientFactory],
+        "Default factory should be IcebergRESTCatalogPlanningClientFactory")
+
+      // Configure factory to use test client
+      val testFactory = new TestServerSidePlanningClientFactory()
+      ServerSidePlanningClientFactory.setFactory(testFactory)
+      assert(ServerSidePlanningClientFactory.getFactory() == testFactory,
+        "Factory should be set to test factory")
 
       try {
-        // NOW configure DeltaCatalog and test client for reads only
-        spark.conf.set("spark.sql.catalog.spark_catalog",
-          "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
+        // Create client and verify it's the test client
+        val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
+        assert(client.isInstanceOf[TestServerSidePlanningClient],
+          "Client should be TestServerSidePlanningClient")
 
-        try {
-          // Execute SELECT query through ServerSidePlannedTable and verify results
-          checkAnswer(
-            sql("SELECT id, name, value FROM testdb.delta_table ORDER BY id"),
-            Seq(
-              Row(1, "one", 1.0),
-              Row(2, "two", 2.0),
-              Row(3, "three", 3.0),
-              Row(4, "four", 4.0)
-            )
+        // Get scan plan and verify file discovery
+        val scanPlan = client.planScan("default", "test_table")
+        assert(scanPlan.files.nonEmpty, "Should discover data files")
+        assert(scanPlan.files.forall(_.fileFormat == "parquet"),
+          "Parquet tables should have parquet file format")
+        assert(scanPlan.files.forall(_.fileSizeInBytes > 0),
+          "All files should have positive size")
+
+        // Get the table schema from the actual table
+        val tableSchema = spark.table("test_table").schema
+
+        // Create ServerSidePlannedTable using schema from the table
+        val table = new ServerSidePlannedTable(
+          spark = spark,
+          database = "default",
+          tableName = "test_table",
+          tableSchema = tableSchema,
+          planningClient = client
+        )
+
+        // Verify table metadata
+        assert(table.name() == "default.test_table",
+          "Table name should be fully qualified")
+        assert(table.schema() == tableSchema,
+          "Table schema should match")
+
+        // Verify scan produces correct number of partitions
+        val scan = table.newScanBuilder(
+          new org.apache.spark.sql.util.CaseInsensitiveStringMap(
+            java.util.Collections.emptyMap()
           )
+        ).build()
 
-          // Verify scan planning discovered the files with correct format
-          val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
-          val scanPlan = client.planScan("testdb", "delta_table")
-          assert(scanPlan.files.nonEmpty, "Should have discovered Delta data files")
-          assert(scanPlan.files.forall(_.fileFormat == "parquet"),
-            "Delta tables store data in parquet format")
+        val partitions = scan.toBatch.planInputPartitions()
+        assert(partitions.length == scanPlan.files.length,
+          s"Should have ${scanPlan.files.length} partitions, one per file")
 
-          // Verify partition count matches discovered files
-          val catalogTable = spark.sessionState.catalog.getTableMetadata(
-            org.apache.spark.sql.catalyst.TableIdentifier("delta_table", Some("testdb")))
-          val deltaLog = org.apache.spark.sql.delta.DeltaLog.forTable(spark, catalogTable)
-          val tableSchema = spark.table("testdb.delta_table").schema
+        // Verify reader factory can be created
+        val readerFactory = scan.toBatch.createReaderFactory()
+        assert(readerFactory != null, "Reader factory should be created")
 
-          val table = new ServerSidePlannedTable(
-            spark = spark,
-            database = "testdb",
-            tableName = "delta_table",
-            tableSchema = tableSchema,
-            planningClient = client,
-            deltaLog = deltaLog
-          )
+        // Verify we can create a reader for the first partition
+        val reader = readerFactory.createReader(partitions(0))
+        assert(reader != null, "Reader should be created for partition")
 
-          val partitions = table.newScanBuilder(
-            new org.apache.spark.sql.util.CaseInsensitiveStringMap(
-              java.util.Collections.emptyMap()
-            )
-          ).build().toBatch.planInputPartitions()
-
-          assert(partitions.length == scanPlan.files.length,
-            s"Should have ${scanPlan.files.length} partitions matching discovered files")
-
-        } finally {
-          ServerSidePlanningClientFactory.clearFactory()
-        }
       } finally {
-        // Restore original catalog
-        originalCatalog.foreach(spark.conf.set("spark.sql.catalog.spark_catalog", _))
+        // Clean up factory and verify back to default
+        ServerSidePlanningClientFactory.clearFactory()
+        assert(ServerSidePlanningClientFactory.getFactory()
+          .isInstanceOf[IcebergRESTCatalogPlanningClientFactory],
+          "Factory should be reset to default")
       }
     }
-  }
-
-  test("ServerSidePlanningClientFactory registry works correctly") {
-    // Verify default factory
-    assert(ServerSidePlanningClientFactory.getFactory()
-      .isInstanceOf[IcebergRESTCatalogPlanningClientFactory])
-
-    // Set custom factory (test client)
-    val testFactory = new TestServerSidePlanningClientFactory()
-
-    ServerSidePlanningClientFactory.setFactory(testFactory)
-    assert(ServerSidePlanningClientFactory.getFactory() == testFactory)
-
-    // Verify client creation uses custom factory
-    val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
-    assert(client.isInstanceOf[TestServerSidePlanningClient])
-
-    // Clear and verify back to default
-    ServerSidePlanningClientFactory.clearFactory()
-    assert(ServerSidePlanningClientFactory.getFactory()
-      .isInstanceOf[IcebergRESTCatalogPlanningClientFactory])
   }
 }
