@@ -48,7 +48,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
 
       try {
         // Create client and get scan plan
-        val client = ServerSidePlanningClientFactory.createClient(spark)
+        val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
         val scanPlan = client.planScan("testdb", "test_table")
 
         // Verify we discovered files using input_file_name()
@@ -133,7 +133,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
           assert(results(3).getInt(0) == 4)
 
           // Verify scan planning discovered the files
-          val client = ServerSidePlanningClientFactory.createClient(spark)
+          val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
           val scanPlan = client.planScan("testdb", "parquet_table")
           assert(scanPlan.files.length == 2, "Should have discovered 2 parquet files")
 
@@ -160,7 +160,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
     assert(ServerSidePlanningClientFactory.getFactory() == testFactory)
 
     // Verify client creation uses custom factory
-    val client = ServerSidePlanningClientFactory.createClient(spark)
+    val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
     assert(client.isInstanceOf[TestServerSidePlanningClient])
 
     // Clear and verify back to default

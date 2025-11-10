@@ -57,15 +57,6 @@ trait ServerSidePlanningClient {
  */
 trait ServerSidePlanningClientFactory {
   /**
-   * Create a client using hardcoded configuration keys.
-   * This is primarily used for testing. Production code should use buildForCatalog.
-   *
-   * @param spark The SparkSession
-   * @return A ServerSidePlanningClient
-   */
-  def createClient(spark: SparkSession): ServerSidePlanningClient
-
-  /**
    * Create a client for a specific catalog by reading catalog-specific configuration.
    * This method reads configuration from spark.sql.catalog.<catalogName>.uri and
    * spark.sql.catalog.<catalogName>.token.
@@ -82,19 +73,6 @@ trait ServerSidePlanningClientFactory {
  * from the iceberg module (if available).
  */
 class IcebergRESTCatalogPlanningClientFactory extends ServerSidePlanningClientFactory {
-  override def createClient(spark: SparkSession): ServerSidePlanningClient = {
-    val catalogUri = spark.conf.get("spark.delta.iceberg.rest.catalog.uri", "")
-    val token = spark.conf.get("spark.delta.iceberg.rest.catalog.token", "")
-
-    if (catalogUri.isEmpty) {
-      throw new IllegalStateException(
-        "Iceberg REST catalog URI not configured. " +
-        "Please set spark.delta.iceberg.rest.catalog.uri")
-    }
-
-    createClientWithUriAndToken(catalogUri, token)
-  }
-
   override def buildForCatalog(
       spark: SparkSession,
       catalogName: String): ServerSidePlanningClient = {
@@ -148,13 +126,6 @@ object ServerSidePlanningClientFactory {
    */
   def getFactory(): ServerSidePlanningClientFactory = {
     customFactory.getOrElse(new IcebergRESTCatalogPlanningClientFactory())
-  }
-
-  /**
-   * Convenience method to create a client using the current factory.
-   */
-  def createClient(spark: SparkSession): ServerSidePlanningClient = {
-    getFactory().createClient(spark)
   }
 
   /**
