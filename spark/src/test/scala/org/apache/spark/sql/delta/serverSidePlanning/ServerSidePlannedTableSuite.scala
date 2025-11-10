@@ -75,9 +75,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
           // Verify partition count matches discovered files
           val catalogTable = spark.sessionState.catalog.getTableMetadata(
             org.apache.spark.sql.catalyst.TableIdentifier("delta_table", Some("testdb")))
-          val deltaLog = org.apache.spark.sql.delta.DeltaLog.forTable(
-            spark, new org.apache.hadoop.fs.Path(catalogTable.location),
-            catalogTable = Some(catalogTable))
+          val deltaLog = org.apache.spark.sql.delta.DeltaLog.forTable(spark, catalogTable)
           val tableSchema = spark.table("testdb.delta_table").schema
 
           val table = new ServerSidePlannedTable(
