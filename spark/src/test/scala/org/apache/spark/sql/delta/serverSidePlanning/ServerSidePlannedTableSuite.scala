@@ -98,10 +98,10 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         } finally {
           ServerSidePlanningClientFactory.clearFactory()
         }
+      } finally {
+        // Restore original catalog
+        originalCatalog.foreach(spark.conf.set("spark.sql.catalog.spark_catalog", _))
       }
-    } finally {
-      // Restore original catalog
-      originalCatalog.foreach(spark.conf.set("spark.sql.catalog.spark_catalog", _))
     }
   }
 
