@@ -1,1 +1,0 @@
-{"time":"2025-11-04T23:11:20.155511842Z","level":"WARN","msg":"jsonrpc read: failed to read message","error":"failed to read jsonrpc message: EOF"}
