@@ -23,34 +23,33 @@ import org.apache.spark.sql.test.SharedSparkSession
 class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
 
   test("end-to-end: SELECT query returns correct results through ServerSidePlannedTable") {
-    // Save original catalog config
-    val originalCatalog = spark.conf.getOption("spark.sql.catalog.spark_catalog")
+    withTable("testdb.delta_table") {
+      // Create test Delta table with data BEFORE configuring DeltaCatalog
+      // This ensures writes use the normal path, not ServerSidePlannedTable (which is read-only)
+      sql("CREATE DATABASE IF NOT EXISTS testdb")
+      sql("""
+        CREATE TABLE testdb.delta_table (
+          id INT,
+          name STRING,
+          value DOUBLE
+        ) USING delta
+      """)
 
-    try {
-      // Configure DeltaCatalog as the Spark catalog
-      spark.conf.set("spark.sql.catalog.spark_catalog",
-        "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+      sql("""
+        INSERT INTO testdb.delta_table VALUES
+        (1, 'one', 1.0),
+        (2, 'two', 2.0),
+        (3, 'three', 3.0),
+        (4, 'four', 4.0)
+      """)
 
-      withTable("testdb.delta_table") {
-        // Create test Delta table with data
-        sql("CREATE DATABASE IF NOT EXISTS testdb")
-        sql("""
-          CREATE TABLE testdb.delta_table (
-            id INT,
-            name STRING,
-            value DOUBLE
-          ) USING delta
-        """)
+      // Save original catalog config
+      val originalCatalog = spark.conf.getOption("spark.sql.catalog.spark_catalog")
 
-        sql("""
-          INSERT INTO testdb.delta_table VALUES
-          (1, 'one', 1.0),
-          (2, 'two', 2.0),
-          (3, 'three', 3.0),
-          (4, 'four', 4.0)
-        """)
-
-        // Configure test client
+      try {
+        // NOW configure DeltaCatalog and test client for reads only
+        spark.conf.set("spark.sql.catalog.spark_catalog",
+          "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
 
         try {
