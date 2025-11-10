@@ -25,7 +25,7 @@ import org.apache.spark.sql.functions.input_file_name
 /**
  * Implementation of ServerSidePlanningClient that uses Spark SQL with input_file_name()
  * to discover the list of files in a table. This allows end-to-end testing without
- * a real REST server.
+ * a real server that can do server-side planning.
  *
  * This implementation works with any Spark-readable table format (Delta, Parquet, Iceberg, etc.)
  */
