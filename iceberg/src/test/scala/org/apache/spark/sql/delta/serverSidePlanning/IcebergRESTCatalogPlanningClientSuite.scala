@@ -14,24 +14,20 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.delta
+package org.apache.spark.sql.delta.serverSidePlanning
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.delta.serverSidePlanning.{IcebergRESTCatalogPlanningClient, IcebergRESTCatalogPlanningClientFactory}
-import org.eclipse.jetty.server.Server
-import org.eclipse.jetty.server.handler.gzip.GzipHandler
-import org.eclipse.jetty.servlet.ServletContextHandler
-import org.eclipse.jetty.servlet.ServletHolder
-import org.apache.http.entity.ContentType
-import org.apache.http.message.BasicHeader
 import org.apache.http.HttpHeaders
 import org.apache.http.client.methods.HttpGet
+import org.apache.http.entity.ContentType
 import org.apache.http.impl.client.HttpClientBuilder
-import org.scalatest.funsuite.AnyFunSuite
+import org.apache.http.message.BasicHeader
+import org.apache.spark.sql.delta.serverSidePlanning.{IcebergRESTCatalogPlanningClient, IcebergRESTCatalogPlanningClientFactory}
 import org.scalatest.BeforeAndAfterAll
-import shadedForDelta.org.apache.iceberg.catalog._
+import org.scalatest.funsuite.AnyFunSuite
 import shadedForDelta.org.apache.iceberg.{PartitionSpec, Schema, Table}
+import shadedForDelta.org.apache.iceberg.catalog._
 import shadedForDelta.org.apache.iceberg.rest.IcebergRESTServer
 import shadedForDelta.org.apache.iceberg.types.Types
 
@@ -64,6 +60,9 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
       assert(scanPlan != null)
       assert(scanPlan.files != null)
       // Empty table should have 0 files
+      // Note: This test uses an unpartitioned table (spec ID 0). The client currently only
+      // supports unpartitioned tables and throws UnsupportedOperationException for partitioned
+      // tables in IcebergRESTCatalogPlanningClient.convertToScanPlan when file.partition().size() > 0.
       assert(scanPlan.files.isEmpty, s"Expected 0 files for empty table, got ${scanPlan.files.length}")
     }
   }
