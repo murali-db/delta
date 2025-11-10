@@ -18,7 +18,7 @@ package org.apache.spark.sql.delta
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.delta.serverSidePlanning.IcebergRESTCatalogPlanningClient
+import org.apache.spark.sql.delta.serverSidePlanning.{IcebergRESTCatalogPlanningClient, IcebergRESTCatalogPlanningClientFactory}
 import org.eclipse.jetty.server.Server
 import org.eclipse.jetty.server.handler.gzip.GzipHandler
 import org.eclipse.jetty.servlet.ServletContextHandler
@@ -65,6 +65,31 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
       assert(scanPlan.files != null)
       // Empty table should have 0 files
       assert(scanPlan.files.isEmpty, s"Expected 0 files for empty table, got ${scanPlan.files.length}")
+    }
+  }
+
+  test("IcebergRESTCatalogPlanningClientFactory creates client with catalog config") {
+    withTempTable("testTable") { table =>
+      // Create a mock SparkSession with catalog configuration
+      val spark = org.apache.spark.sql.SparkSession.builder()
+        .master("local[1]")
+        .appName("IcebergRESTCatalogPlanningClientFactoryTest")
+        .config(s"spark.sql.catalog.test_catalog.uri", serverUri)
+        .config(s"spark.sql.catalog.test_catalog.token", "test-token")
+        .getOrCreate()
+
+      try {
+        val factory = new IcebergRESTCatalogPlanningClientFactory()
+        val client = factory.buildForCatalog(spark, "test_catalog")
+
+        // Verify client can be used to plan scans
+        val scanPlan = client.planScan(defaultNamespace.toString, "testTable")
+        assert(scanPlan != null)
+        assert(scanPlan.files != null)
+        assert(scanPlan.files.isEmpty)
+      } finally {
+        spark.stop()
+      }
     }
   }
 
