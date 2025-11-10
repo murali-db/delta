@@ -52,6 +52,16 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     }
   }
 
+  override def afterAll(): Unit = {
+    try {
+      if (server != null) {
+        server.stop()
+      }
+    } finally {
+      super.afterAll()
+    }
+  }
+
   test("basic plan table scan via IcebergRESTCatalogPlanningClient") {
     withTempTable("testTable") { table =>
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
@@ -104,19 +114,26 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
 
   private def isServerReachable(server: IcebergRESTServer): Boolean = {
     val httpHeaders = Map(
-      // HttpHeaders.AUTHORIZATION -> s"Bearer $token",
       HttpHeaders.ACCEPT -> ContentType.APPLICATION_JSON.getMimeType,
       HttpHeaders.CONTENT_TYPE -> ContentType.APPLICATION_JSON.getMimeType
     ).map { case (k, v) => new BasicHeader(k, v) }.toSeq.asJava
 
     val httpClient = HttpClientBuilder.create()
       .setDefaultHeaders(httpHeaders)
-      .build();
-    val httpGet = new HttpGet(s"http://localhost:${server.getPort}/v1/config")
-    val httpResponse = httpClient.execute(httpGet)
-    val statusCode = httpResponse.getStatusLine.getStatusCode
-    httpResponse.close()
-    statusCode == 200
+      .build()
+
+    try {
+      val httpGet = new HttpGet(s"http://localhost:${server.getPort}/v1/config")
+      val httpResponse = httpClient.execute(httpGet)
+      try {
+        val statusCode = httpResponse.getStatusLine.getStatusCode
+        statusCode == 200
+      } finally {
+        httpResponse.close()
+      }
+    } finally {
+      httpClient.close()
+    }
   }
 
   private def withTempTable[T](tableName: String)(func: Table => T): T = {

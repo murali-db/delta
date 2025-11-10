@@ -34,13 +34,42 @@ import shadedForDelta.org.apache.iceberg.rest.responses.PlanTableScanResponse
 
 /**
  * Iceberg REST implementation of ServerSidePlanningClient that calls Iceberg REST catalog server.
- * This class lives in the iceberg module where Iceberg libraries are available.
+ *
+ * This implementation calls the Iceberg REST catalog's `/plan` endpoint to perform server-side
+ * scan planning. The server returns the list of data files to read, which eliminates the need
+ * for client-side listing operations.
+ *
+ * Current limitations:
+ * - Only supports unpartitioned tables (spec ID 0). Partitioned tables will throw
+ *   UnsupportedOperationException during scan conversion.
+ * - Only supports current snapshot planning (snapshotId = 0). Time-travel queries are not
+ *   supported.
+ * - Authentication is not yet implemented. The token parameter is accepted but not currently
+ *   used. This is planned for future work.
+ * - No retry logic for transient failures.
+ * - No support for async planning (plan status must be "completed").
+ *
+ * Thread safety: This class creates a shared HTTP client that is thread-safe for concurrent
+ * requests. The HTTP client should be explicitly closed by calling close() when done.
+ *
+ * @param icebergRestCatalogUriRoot Base URI of the Iceberg REST catalog server, e.g.,
+ *                                   "http://localhost:8181". Should not include trailing slash
+ *                                   or "/v1" prefix.
+ * @param token Authentication token for the catalog server. Currently not used as authentication
+ *              is not yet implemented. Planned for future work.
  */
 class IcebergRESTCatalogPlanningClient(
     icebergRestCatalogUriRoot: String,
-    token: String) extends ServerSidePlanningClient {
+    token: String) extends ServerSidePlanningClient with AutoCloseable {
+
+  // Sentinel value indicating "use current snapshot" in Iceberg REST API
+  private val CURRENT_SNAPSHOT_ID = 0L
+
+  // Partition spec ID for unpartitioned tables
+  private val UNPARTITIONED_SPEC_ID = 0
 
   private val httpHeaders = Map(
+    // TODO: Authentication not yet implemented. Uncomment when ready to add Bearer token auth.
     // HttpHeaders.AUTHORIZATION -> s"Bearer $token",
     HttpHeaders.ACCEPT -> ContentType.APPLICATION_JSON.getMimeType,
     HttpHeaders.CONTENT_TYPE -> ContentType.APPLICATION_JSON.getMimeType
@@ -48,29 +77,51 @@ class IcebergRESTCatalogPlanningClient(
 
   private lazy val httpClient = HttpClientBuilder.create()
     .setDefaultHeaders(httpHeaders)
-    .build();
+    .setConnectionTimeToLive(30, java.util.concurrent.TimeUnit.SECONDS)
+    .build()
 
   override def planScan(database: String, table: String): ScanPlan = {
     val planTableScanUri =
       s"$icebergRestCatalogUriRoot/v1/namespaces/$database/tables/$table/plan"
-    val request = new PlanTableScanRequest.Builder().withSnapshotId(0).build()
+
+    // Request planning for current snapshot. snapshotId = 0 means "use current snapshot"
+    // in the Iceberg REST API spec. Time-travel queries are not yet supported.
+    val request = new PlanTableScanRequest.Builder().withSnapshotId(CURRENT_SNAPSHOT_ID).build()
 
     val requestJson = PlanTableScanRequestParser.toJson(request)
     val httpPost = new HttpPost(planTableScanUri)
     httpPost.setEntity(new StringEntity(requestJson, ContentType.APPLICATION_JSON))
     val httpResponse = httpClient.execute(httpPost)
-    val partitionSpecById = Map(0 -> PartitionSpec.unpartitioned())
+
+    // Only unpartitioned tables are supported. This map is used when parsing the response
+    // to resolve partition specs. The validation that the table is actually unpartitioned
+    // happens later in convertToScanPlan when we check file.partition().size().
+    val unpartitionedSpecMap = Map(UNPARTITIONED_SPEC_ID -> PartitionSpec.unpartitioned())
 
     try {
       val statusCode = httpResponse.getStatusLine.getStatusCode
       val responseBody = EntityUtils.toString(httpResponse.getEntity)
       if (statusCode == HttpStatus.SC_OK || statusCode == HttpStatus.SC_CREATED) {
+        // Parse response. caseSensitive = true because Iceberg is case-sensitive by default.
         val icebergResponse = parsePlanTableScanResponse(
-          responseBody, partitionSpecById, caseSensitive = true)
+          responseBody, unpartitionedSpecMap, caseSensitive = true)
+
+        // Verify plan status is "completed". The Iceberg REST spec allows async planning
+        // where the server returns "submitted" status and the client must poll for results.
+        // We don't support async planning yet, so we require "completed" status.
+        val planStatus = icebergResponse.planStatus()
+        if (planStatus != null && planStatus.toString.toLowerCase(Locale.ROOT) != "completed") {
+          throw new UnsupportedOperationException(
+            s"Async planning not supported. Plan status was '$planStatus' but " +
+            s"expected 'completed'. Table: $database.$table")
+        }
+
         convertToScanPlan(icebergResponse)
       } else {
-        throw new IOException(s"Failed to plan table scan. Status code: $statusCode, " +
-          s"Response body: $responseBody")
+        // TODO: Parse structured ErrorResponse JSON from Iceberg REST spec instead of raw body
+        throw new IOException(
+          s"Failed to plan table scan for $database.$table. " +
+          s"HTTP status: $statusCode, Response: $responseBody")
       }
     } finally {
       httpResponse.close()
@@ -79,16 +130,30 @@ class IcebergRESTCatalogPlanningClient(
 
   /**
    * Convert Iceberg PlanTableScanResponse to simple ScanPlan data class.
+   *
+   * Validates response structure and ensures the table is unpartitioned.
    */
   private def convertToScanPlan(response: PlanTableScanResponse): ScanPlan = {
+    require(response != null, "PlanTableScanResponse cannot be null")
+    require(response.fileScanTasks() != null, "File scan tasks cannot be null")
+
     val files = response.fileScanTasks().asScala.map { task =>
+      require(task != null, "FileScanTask cannot be null")
+      require(task.file() != null, "DataFile cannot be null")
       val file = task.file()
 
-      // Validate that table is unpartitioned - partitioned tables not supported yet
+      // Validate that table is unpartitioned. Partitioned tables (spec ID != 0) are not
+      // supported yet. Supporting partitioned tables would require changes in multiple places:
+      // 1. Parsing partition specs from server response (currently hardcoded to unpartitioned)
+      // 2. Converting partition values to InternalRow format
+      // 3. Passing partition values to ServerSidePlannedFilePartitionReader
+      // This validation ensures we fail fast with a clear error message rather than producing
+      // incorrect results or cryptic errors later.
       if (file.partition().size() > 0) {
         throw new UnsupportedOperationException(
           s"Partitioned tables are not supported yet. " +
-          s"Table has partition data: ${file.partition()}")
+          s"Table has partition data: ${file.partition()}. " +
+          s"Only unpartitioned tables (spec ID $UNPARTITIONED_SPEC_ID) are currently supported.")
       }
 
       ScanFile(
@@ -101,11 +166,26 @@ class IcebergRESTCatalogPlanningClient(
     ScanPlan(files = files)
   }
 
+  /**
+   * Close the HTTP client and release resources.
+   *
+   * This should be called when the client is no longer needed to prevent resource leaks.
+   * After calling close(), this client instance should not be used for further requests.
+   */
+  override def close(): Unit = {
+    if (httpClient != null) {
+      httpClient.close()
+    }
+  }
+
   private def parsePlanTableScanResponse(
     json: String,
     specsById: Map[Int, PartitionSpec],
     caseSensitive: Boolean): PlanTableScanResponse = {
 
+    // Use reflection to access shaded Iceberg parser class since shaded classes
+    // cannot be directly imported. This is required to parse the REST catalog's
+    // PlanTableScan response using the shaded Iceberg library.
     // scalastyle:off classforname
     val parserClass = Class.forName(
       "shadedForDelta.org.apache.iceberg.rest.responses.PlanTableScanResponseParser")
