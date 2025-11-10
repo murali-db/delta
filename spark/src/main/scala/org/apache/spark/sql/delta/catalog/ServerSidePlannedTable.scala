@@ -61,7 +61,8 @@ class ServerSidePlannedTable(
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
-    new ServerSidePlannedScanBuilder(spark, database, tableName, tableSchema, planningClient, deltaLog)
+    new ServerSidePlannedScanBuilder(
+      spark, database, tableName, tableSchema, planningClient, deltaLog)
   }
 }
 
