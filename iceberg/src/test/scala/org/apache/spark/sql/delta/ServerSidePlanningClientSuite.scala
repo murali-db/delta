@@ -58,15 +58,11 @@ class ServerSidePlanningClientSuite extends AnyFunSuite with BeforeAndAfterAll {
 
   test("basic plan table scan via IcebergRESTCatalogPlanningClient") {
     withTempTable("testTable") { table =>
-      // scalastyle:off println
-      println("Table created: " + table)
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
       val scanPlan = client.planScan(defaultNamespace.toString, "testTable")
-      println("Scan plan received with " + scanPlan.files.length + " files")
       // Verify we get a valid scan plan back
       assert(scanPlan != null)
       assert(scanPlan.files != null)
-      // scalastyle:on println
     }
   }
 
@@ -77,9 +73,6 @@ class ServerSidePlanningClientSuite extends AnyFunSuite with BeforeAndAfterAll {
     if (!isServerReachable(newServer)) {
       throw new IllegalStateException("Failed to start IcebergRESTServer")
     }
-    // scalastyle:off println
-    println("Server started on port " + newServer.getPort)
-    // scalastyle:on println
     newServer
   }
 
