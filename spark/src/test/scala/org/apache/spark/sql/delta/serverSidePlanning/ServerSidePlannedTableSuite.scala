@@ -50,9 +50,8 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
           (4, 'four', 4.0)
         """)
 
-        // Configure test client and enable force server-side planning
+        // Configure test client
         ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
-        spark.conf.set("spark.databricks.delta.catalog.forceServerSidePlanning", "true")
 
         try {
           // Execute SELECT query through ServerSidePlannedTable
@@ -103,7 +102,6 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
             s"Should have ${scanPlan.files.length} partitions matching discovered files")
 
         } finally {
-          spark.conf.unset("spark.databricks.delta.catalog.forceServerSidePlanning")
           ServerSidePlanningClientFactory.clearFactory()
         }
       }
