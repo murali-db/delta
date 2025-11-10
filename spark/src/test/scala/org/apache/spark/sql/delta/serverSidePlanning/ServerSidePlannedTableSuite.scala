@@ -43,7 +43,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
       """)
 
       // Configure factory to use test client
-      val testFactory = new ServerSidePlanningTestClientFactory()
+      val testFactory = new TestServerSidePlanningClientFactory()
       ServerSidePlanningClientFactory.setFactory(testFactory)
 
       try {
@@ -114,7 +114,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         """)
 
         // Configure test client and enable force server-side planning
-        ServerSidePlanningClientFactory.setFactory(new ServerSidePlanningTestClientFactory())
+        ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
         spark.conf.set("spark.databricks.delta.catalog.forceServerSidePlanning", "true")
 
         try {
@@ -154,14 +154,14 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
       .isInstanceOf[IcebergRESTCatalogPlanningClientFactory])
 
     // Set custom factory (test client)
-    val testFactory = new ServerSidePlanningTestClientFactory()
+    val testFactory = new TestServerSidePlanningClientFactory()
 
     ServerSidePlanningClientFactory.setFactory(testFactory)
     assert(ServerSidePlanningClientFactory.getFactory() == testFactory)
 
     // Verify client creation uses custom factory
     val client = ServerSidePlanningClientFactory.createClient(spark)
-    assert(client.isInstanceOf[ServerSidePlanningTestClient])
+    assert(client.isInstanceOf[TestServerSidePlanningClient])
 
     // Clear and verify back to default
     ServerSidePlanningClientFactory.clearFactory()

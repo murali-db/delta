@@ -29,7 +29,7 @@ import org.apache.spark.sql.functions.input_file_name
  *
  * This implementation works with any Spark-readable table format (Delta, Parquet, Iceberg, etc.)
  */
-class ServerSidePlanningTestClient(spark: SparkSession) extends ServerSidePlanningClient {
+class TestServerSidePlanningClient(spark: SparkSession) extends ServerSidePlanningClient {
 
   override def planScan(database: String, table: String): ScanPlan = {
     val fullTableName = s"$database.$table"
@@ -74,16 +74,16 @@ class ServerSidePlanningTestClient(spark: SparkSession) extends ServerSidePlanni
 }
 
 /**
- * Factory for creating ServerSidePlanningTestClient instances.
+ * Factory for creating TestServerSidePlanningClient instances.
  */
-class ServerSidePlanningTestClientFactory extends ServerSidePlanningClientFactory {
+class TestServerSidePlanningClientFactory extends ServerSidePlanningClientFactory {
   override def createClient(spark: SparkSession): ServerSidePlanningClient = {
-    new ServerSidePlanningTestClient(spark)
+    new TestServerSidePlanningClient(spark)
   }
 
   override def buildForCatalog(
       spark: SparkSession,
       catalogName: String): ServerSidePlanningClient = {
-    new ServerSidePlanningTestClient(spark)
+    new TestServerSidePlanningClient(spark)
   }
 }
