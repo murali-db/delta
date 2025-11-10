@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.delta.serverSidePlanning
 
-import org.apache.spark.sql.QueryTest
+import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.delta.catalog.ServerSidePlannedTable
 import org.apache.spark.sql.test.SharedSparkSession
 
@@ -54,19 +54,16 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
 
         try {
-          // Execute SELECT query through ServerSidePlannedTable
-          val results = sql("SELECT id, name, value FROM testdb.delta_table ORDER BY id")
-            .collect()
-
-          // Verify results: Should return all 4 rows through server-side scan planning
-          assert(results.length == 4, "Expected 4 rows from ServerSidePlannedTable")
-          assert(results(0).getInt(0) == 1)
-          assert(results(0).getString(1) == "one")
-          assert(results(0).getDouble(2) == 1.0)
-          assert(results(1).getInt(0) == 2)
-          assert(results(1).getString(1) == "two")
-          assert(results(2).getInt(0) == 3)
-          assert(results(3).getInt(0) == 4)
+          // Execute SELECT query through ServerSidePlannedTable and verify results
+          checkAnswer(
+            sql("SELECT id, name, value FROM testdb.delta_table ORDER BY id"),
+            Seq(
+              Row(1, "one", 1.0),
+              Row(2, "two", 2.0),
+              Row(3, "three", 3.0),
+              Row(4, "four", 4.0)
+            )
+          )
 
           // Verify scan planning discovered the files with correct format
           val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
