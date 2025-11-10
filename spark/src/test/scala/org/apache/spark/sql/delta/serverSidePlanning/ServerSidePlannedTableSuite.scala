@@ -22,76 +22,6 @@ import org.apache.spark.sql.test.SharedSparkSession
 
 class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
 
-  test("end-to-end: discover Parquet files using test client with input_file_name()") {
-    withTable("testdb.test_table") {
-      // Create a Delta table with data
-      sql("CREATE DATABASE IF NOT EXISTS testdb")
-      sql("""
-        CREATE TABLE testdb.test_table (
-          id INT,
-          name STRING,
-          category STRING
-        ) USING delta
-      """)
-
-      sql("""
-        INSERT INTO testdb.test_table (id, name, category) VALUES
-        (1, 'Alice', 'A'),
-        (2, 'Bob', 'B'),
-        (3, 'Charlie', 'A'),
-        (4, 'David', 'B')
-      """)
-
-      // Configure factory to use test client
-      val testFactory = new TestServerSidePlanningClientFactory()
-      ServerSidePlanningClientFactory.setFactory(testFactory)
-
-      try {
-        // Create client and get scan plan
-        val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
-        val scanPlan = client.planScan("testdb", "test_table")
-
-        // Verify we discovered files using input_file_name()
-        assert(scanPlan.files.nonEmpty, "Should discover data files")
-        assert(scanPlan.files.forall(_.fileFormat == "parquet"),
-          "Delta tables store data in parquet format")
-
-        // Get the table schema and location to create DeltaLog
-        val tableSchema = spark.table("testdb.test_table").schema
-        val catalogTable = spark.sessionState.catalog.getTableMetadata(
-          org.apache.spark.sql.catalyst.TableIdentifier("test_table", Some("testdb")))
-        val deltaLog = org.apache.spark.sql.delta.DeltaLog.forTable(
-          spark, new org.apache.hadoop.fs.Path(catalogTable.location),
-          catalogTable = Some(catalogTable))
-
-        // Create ServerSidePlannedTable using schema from the table
-        val table = new ServerSidePlannedTable(
-          spark = spark,
-          database = "testdb",
-          tableName = "test_table",
-          tableSchema = tableSchema,
-          planningClient = client,
-          deltaLog = deltaLog
-        )
-
-        // Verify scan produces correct number of partitions
-        val scan = table.newScanBuilder(
-          new org.apache.spark.sql.util.CaseInsensitiveStringMap(
-            java.util.Collections.emptyMap()
-          )
-        ).build()
-
-        val partitions = scan.toBatch.planInputPartitions()
-        assert(partitions.length == scanPlan.files.length,
-          s"Should have ${scanPlan.files.length} partitions")
-
-      } finally {
-        // Clean up factory
-        ServerSidePlanningClientFactory.clearFactory()
-      }
-    }
-  }
-
   test("end-to-end: SELECT query returns correct results through ServerSidePlannedTable") {
     // Save original catalog config
     val originalCatalog = spark.conf.getOption("spark.sql.catalog.spark_catalog")
@@ -139,10 +69,38 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
           assert(results(2).getInt(0) == 3)
           assert(results(3).getInt(0) == 4)
 
-          // Verify scan planning discovered the files
+          // Verify scan planning discovered the files with correct format
           val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
           val scanPlan = client.planScan("testdb", "delta_table")
           assert(scanPlan.files.nonEmpty, "Should have discovered Delta data files")
+          assert(scanPlan.files.forall(_.fileFormat == "parquet"),
+            "Delta tables store data in parquet format")
+
+          // Verify partition count matches discovered files
+          val catalogTable = spark.sessionState.catalog.getTableMetadata(
+            org.apache.spark.sql.catalyst.TableIdentifier("delta_table", Some("testdb")))
+          val deltaLog = org.apache.spark.sql.delta.DeltaLog.forTable(
+            spark, new org.apache.hadoop.fs.Path(catalogTable.location),
+            catalogTable = Some(catalogTable))
+          val tableSchema = spark.table("testdb.delta_table").schema
+
+          val table = new ServerSidePlannedTable(
+            spark = spark,
+            database = "testdb",
+            tableName = "delta_table",
+            tableSchema = tableSchema,
+            planningClient = client,
+            deltaLog = deltaLog
+          )
+
+          val partitions = table.newScanBuilder(
+            new org.apache.spark.sql.util.CaseInsensitiveStringMap(
+              java.util.Collections.emptyMap()
+            )
+          ).build().toBatch.planInputPartitions()
+
+          assert(partitions.length == scanPlan.files.length,
+            s"Should have ${scanPlan.files.length} partitions matching discovered files")
 
         } finally {
           spark.conf.unset("spark.databricks.delta.catalog.forceServerSidePlanning")
