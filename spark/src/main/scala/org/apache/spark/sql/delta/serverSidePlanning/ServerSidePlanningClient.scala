@@ -69,67 +69,43 @@ trait ServerSidePlanningClientFactory {
 }
 
 /**
- * Default factory that uses reflection to load IcebergRESTCatalogPlanningClient
- * from the iceberg module (if available).
- */
-class IcebergRESTCatalogPlanningClientFactory extends ServerSidePlanningClientFactory {
-  override def buildForCatalog(
-      spark: SparkSession,
-      catalogName: String): ServerSidePlanningClient = {
-    val catalogUri = spark.conf.get(s"spark.sql.catalog.$catalogName.uri", "")
-    val token = spark.conf.get(s"spark.sql.catalog.$catalogName.token", "")
-
-    if (catalogUri.isEmpty) {
-      throw new IllegalStateException(
-        s"Catalog URI not configured for catalog '$catalogName'. " +
-        s"Please set spark.sql.catalog.$catalogName.uri")
-    }
-
-    createClientWithUriAndToken(catalogUri, token)
-  }
-
-  private def createClientWithUriAndToken(
-      catalogUri: String,
-      token: String): ServerSidePlanningClient = {
-    // Use reflection to avoid compile-time dependency on iceberg module
-    // scalastyle:off classforname
-    val clientClass = Class.forName(
-      "org.apache.spark.sql.delta.serverSidePlanning.IcebergRESTCatalogPlanningClient")
-    // scalastyle:on classforname
-    val constructor = clientClass.getConstructor(classOf[String], classOf[String])
-    constructor.newInstance(catalogUri, token).asInstanceOf[ServerSidePlanningClient]
-  }
-}
-
-/**
- * Registry for client factories. Can be configured for testing.
+ * Registry for client factories. Can be configured for testing or to provide
+ * production implementations (e.g., IcebergRESTCatalogPlanningClientFactory).
+ *
+ * By default, no factory is registered. Production code should register an appropriate
+ * factory implementation before attempting to create clients.
  */
 object ServerSidePlanningClientFactory {
-  @volatile private var customFactory: Option[ServerSidePlanningClientFactory] = None
+  @volatile private var registeredFactory: Option[ServerSidePlanningClientFactory] = None
 
   /**
-   * Set a custom factory for testing or alternative implementations.
+   * Set a factory for production use or testing.
    */
   def setFactory(factory: ServerSidePlanningClientFactory): Unit = {
-    customFactory = Some(factory)
+    registeredFactory = Some(factory)
   }
 
   /**
-   * Clear the custom factory and return to default behavior.
+   * Clear the registered factory.
    */
   def clearFactory(): Unit = {
-    customFactory = None
+    registeredFactory = None
   }
 
   /**
-   * Get the current factory (custom or default).
+   * Get the currently registered factory.
+   * Throws IllegalStateException if no factory has been registered.
    */
   def getFactory(): ServerSidePlanningClientFactory = {
-    customFactory.getOrElse(new IcebergRESTCatalogPlanningClientFactory())
+    registeredFactory.getOrElse {
+      throw new IllegalStateException(
+        "No ServerSidePlanningClientFactory has been registered. " +
+        "Call ServerSidePlanningClientFactory.setFactory() to register an implementation.")
+    }
   }
 
   /**
-   * Convenience method to create a client for a specific catalog using the current factory.
+   * Convenience method to create a client for a specific catalog using the registered factory.
    */
   def buildForCatalog(spark: SparkSession, catalogName: String): ServerSidePlanningClient = {
     getFactory().buildForCatalog(spark, catalogName)

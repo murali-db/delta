@@ -41,11 +41,6 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         (4, 'David', 'B')
       """)
 
-      // Verify default factory
-      assert(ServerSidePlanningClientFactory.getFactory()
-        .isInstanceOf[IcebergRESTCatalogPlanningClientFactory],
-        "Default factory should be IcebergRESTCatalogPlanningClientFactory")
-
       // Configure factory to use test client
       val testFactory = new TestServerSidePlanningClientFactory()
       ServerSidePlanningClientFactory.setFactory(testFactory)
@@ -104,11 +99,8 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         assert(reader != null, "Reader should be created for partition")
 
       } finally {
-        // Clean up factory and verify back to default
+        // Clean up factory
         ServerSidePlanningClientFactory.clearFactory()
-        assert(ServerSidePlanningClientFactory.getFactory()
-          .isInstanceOf[IcebergRESTCatalogPlanningClientFactory],
-          "Factory should be reset to default")
       }
     }
   }
