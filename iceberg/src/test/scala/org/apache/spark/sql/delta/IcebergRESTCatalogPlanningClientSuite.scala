@@ -35,7 +35,7 @@ import shadedForDelta.org.apache.iceberg.{PartitionSpec, Schema, Table}
 import shadedForDelta.org.apache.iceberg.rest.IcebergRESTServer
 import shadedForDelta.org.apache.iceberg.types.Types
 
-class ServerSidePlanningClientSuite extends AnyFunSuite with BeforeAndAfterAll {
+class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAfterAll {
 
   private val defaultNamespace = Namespace.of("testDatabase")
   private val defaultSchema = new Schema(
