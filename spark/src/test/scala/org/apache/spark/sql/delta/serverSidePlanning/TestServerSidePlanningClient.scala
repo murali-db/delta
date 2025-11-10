@@ -65,6 +65,8 @@ class TestServerSidePlanningClient(spark: SparkSession) extends ServerSidePlanni
   }
 
   private def getFileFormat(path: Path): String = {
+    // Scalastyle suppression needed: the caselocale regex incorrectly flags even correct usage
+    // of toLowerCase(Locale.ROOT). Similar to PartitionUtils.scala and SchemaUtils.scala.
     // scalastyle:off caselocale
     val name = path.getName.toLowerCase(Locale.ROOT)
     // scalastyle:on caselocale

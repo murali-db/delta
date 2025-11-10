@@ -153,6 +153,8 @@ class ServerSidePlannedFilePartitionReaderFactory(
     val filePartition = partition.asInstanceOf[ServerSidePlannedFileInputPartition]
 
     // Verify file format is Parquet
+    // Scalastyle suppression needed: the caselocale regex incorrectly flags even correct usage
+    // of toLowerCase(Locale.ROOT). Similar to PartitionUtils.scala and SchemaUtils.scala.
     // scalastyle:off caselocale
     if (filePartition.fileFormat.toLowerCase(Locale.ROOT) != "parquet") {
     // scalastyle:on caselocale
