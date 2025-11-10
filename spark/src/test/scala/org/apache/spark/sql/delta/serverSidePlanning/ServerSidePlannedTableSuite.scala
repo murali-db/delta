@@ -24,14 +24,14 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
 
   test("end-to-end: discover Parquet files using test client with input_file_name()") {
     withTable("testdb.test_table") {
-      // Create a Parquet table with data
+      // Create a Delta table with data
       sql("CREATE DATABASE IF NOT EXISTS testdb")
       sql("""
         CREATE TABLE testdb.test_table (
           id INT,
           name STRING,
           category STRING
-        ) USING parquet
+        ) USING delta
       """)
 
       sql("""
@@ -54,17 +54,24 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         // Verify we discovered files using input_file_name()
         assert(scanPlan.files.nonEmpty, "Should discover data files")
         assert(scanPlan.files.forall(_.fileFormat == "parquet"),
-          "Parquet tables use parquet format")
+          "Delta tables store data in parquet format")
 
-        // Get the table schema from the actual table
+        // Get the table schema and location to create DeltaLog
         val tableSchema = spark.table("testdb.test_table").schema
+        val catalogTable = spark.sessionState.catalog.getTableMetadata(
+          org.apache.spark.sql.catalyst.TableIdentifier("test_table", Some("testdb")))
+        val deltaLog = org.apache.spark.sql.delta.DeltaLog.forTable(
+          spark, new org.apache.hadoop.fs.Path(catalogTable.location),
+          catalogTable = Some(catalogTable))
 
         // Create ServerSidePlannedTable using schema from the table
         val table = new ServerSidePlannedTable(
+          spark = spark,
           database = "testdb",
           tableName = "test_table",
           tableSchema = tableSchema,
-          planningClient = client
+          planningClient = client,
+          deltaLog = deltaLog
         )
 
         // Verify scan produces correct number of partitions
@@ -94,19 +101,19 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
       spark.conf.set("spark.sql.catalog.spark_catalog",
         "org.apache.spark.sql.delta.catalog.DeltaCatalog")
 
-      withTable("testdb.parquet_table") {
-        // Create test table with data
+      withTable("testdb.delta_table") {
+        // Create test Delta table with data
         sql("CREATE DATABASE IF NOT EXISTS testdb")
         sql("""
-          CREATE TABLE testdb.parquet_table (
+          CREATE TABLE testdb.delta_table (
             id INT,
             name STRING,
             value DOUBLE
-          ) USING parquet
+          ) USING delta
         """)
 
         sql("""
-          INSERT INTO testdb.parquet_table VALUES
+          INSERT INTO testdb.delta_table VALUES
           (1, 'one', 1.0),
           (2, 'two', 2.0),
           (3, 'three', 3.0),
@@ -119,7 +126,7 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
 
         try {
           // Execute SELECT query through ServerSidePlannedTable
-          val results = sql("SELECT id, name, value FROM testdb.parquet_table ORDER BY id")
+          val results = sql("SELECT id, name, value FROM testdb.delta_table ORDER BY id")
             .collect()
 
           // Verify results: Should return all 4 rows through server-side scan planning
@@ -134,8 +141,8 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
 
           // Verify scan planning discovered the files
           val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
-          val scanPlan = client.planScan("testdb", "parquet_table")
-          assert(scanPlan.files.length == 2, "Should have discovered 2 parquet files")
+          val scanPlan = client.planScan("testdb", "delta_table")
+          assert(scanPlan.files.nonEmpty, "Should have discovered Delta data files")
 
         } finally {
           spark.conf.unset("spark.databricks.delta.catalog.forceServerSidePlanning")

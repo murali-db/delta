@@ -24,6 +24,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.delta.DeltaLog
 import org.apache.spark.sql.delta.serverSidePlanning.ServerSidePlanningClient
 import org.apache.spark.sql.connector.catalog.{SupportsRead, Table, TableCapability}
 import org.apache.spark.sql.connector.read._
@@ -36,12 +37,17 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
  * A Spark Table implementation that uses server-side scan planning
  * to get the list of files to read. Used as a fallback when Unity Catalog
  * doesn't provide credentials.
+ *
+ * Similar to DeltaTableV2, we accept SparkSession and DeltaLog as constructor parameters
+ * since Tables are created on the driver and are not serialized to executors.
  */
 class ServerSidePlannedTable(
+    spark: SparkSession,
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient) extends Table with SupportsRead {
+    planningClient: ServerSidePlanningClient,
+    deltaLog: DeltaLog) extends Table with SupportsRead {
 
   override def name(): String = s"$database.$tableName"
 
@@ -52,7 +58,7 @@ class ServerSidePlannedTable(
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
-    new ServerSidePlannedScanBuilder(database, tableName, tableSchema, planningClient)
+    new ServerSidePlannedScanBuilder(spark, database, tableName, tableSchema, planningClient, deltaLog)
   }
 }
 
@@ -60,13 +66,15 @@ class ServerSidePlannedTable(
  * ScanBuilder that uses ServerSidePlanningClient to plan the scan.
  */
 class ServerSidePlannedScanBuilder(
+    spark: SparkSession,
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient) extends ScanBuilder {
+    planningClient: ServerSidePlanningClient,
+    deltaLog: DeltaLog) extends ScanBuilder {
 
   override def build(): Scan = {
-    new ServerSidePlannedScan(database, tableName, tableSchema, planningClient)
+    new ServerSidePlannedScan(spark, database, tableName, tableSchema, planningClient, deltaLog)
   }
 }
 
@@ -74,10 +82,12 @@ class ServerSidePlannedScanBuilder(
  * Scan implementation that calls the server-side planning API to get file list.
  */
 class ServerSidePlannedScan(
+    spark: SparkSession,
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient) extends Scan with Batch {
+    planningClient: ServerSidePlanningClient,
+    deltaLog: DeltaLog) extends Scan with Batch {
 
   override def readSchema(): StructType = tableSchema
 
@@ -94,7 +104,7 @@ class ServerSidePlannedScan(
   }
 
   override def createReaderFactory(): PartitionReaderFactory = {
-    new ServerSidePlannedFilePartitionReaderFactory(tableSchema)
+    new ServerSidePlannedFilePartitionReaderFactory(spark, tableSchema, deltaLog)
   }
 }
 
@@ -110,16 +120,17 @@ case class ServerSidePlannedFileInputPartition(
  * Factory for creating PartitionReaders that read server-side planned files.
  * Builds reader functions on the driver for Parquet files.
  */
-class ServerSidePlannedFilePartitionReaderFactory(schema: StructType)
+class ServerSidePlannedFilePartitionReaderFactory(
+    spark: SparkSession,
+    schema: StructType,
+    deltaLog: DeltaLog)
     extends PartitionReaderFactory {
 
   import org.apache.spark.util.SerializableConfiguration
 
-  // Get SparkSession and Hadoop configuration on driver
-  private val spark = SparkSession.active
-  // scalastyle:off deltahadoopconfiguration
-  private val hadoopConf = new SerializableConfiguration(spark.sessionState.newHadoopConf())
-  // scalastyle:on deltahadoopconfiguration
+  // Get Hadoop configuration from DeltaLog on driver
+  // This includes DataFrame options like custom S3 credentials
+  private val hadoopConf = new SerializableConfiguration(deltaLog.newDeltaHadoopConf())
 
   // Pre-build reader function for Parquet on the driver
   // This function will be serialized and sent to executors
