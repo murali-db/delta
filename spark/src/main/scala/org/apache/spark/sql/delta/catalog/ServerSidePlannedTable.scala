@@ -29,9 +29,6 @@ import org.apache.spark.sql.connector.catalog.{SupportsRead, Table, TableCapabil
 import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.execution.datasources.{FileFormat, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.datasources.orc.OrcFileFormat
-import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
-import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
@@ -43,8 +40,8 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 class ServerSidePlannedTable(
     database: String,
     tableName: String,
-    client: ServerSidePlanningClient,
-    tableSchema: StructType) extends Table with SupportsRead {
+    tableSchema: StructType,
+    planningClient: ServerSidePlanningClient) extends Table with SupportsRead {
 
   override def name(): String = s"$database.$tableName"
 
@@ -55,7 +52,7 @@ class ServerSidePlannedTable(
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
-    new ServerSidePlannedScanBuilder(database, tableName, client, tableSchema)
+    new ServerSidePlannedScanBuilder(database, tableName, tableSchema, planningClient)
   }
 }
 
@@ -65,11 +62,11 @@ class ServerSidePlannedTable(
 class ServerSidePlannedScanBuilder(
     database: String,
     tableName: String,
-    client: ServerSidePlanningClient,
-    tableSchema: StructType) extends ScanBuilder {
+    tableSchema: StructType,
+    planningClient: ServerSidePlanningClient) extends ScanBuilder {
 
   override def build(): Scan = {
-    new ServerSidePlannedScan(database, tableName, client, tableSchema)
+    new ServerSidePlannedScan(database, tableName, tableSchema, planningClient)
   }
 }
 
@@ -79,8 +76,8 @@ class ServerSidePlannedScanBuilder(
 class ServerSidePlannedScan(
     database: String,
     tableName: String,
-    client: ServerSidePlanningClient,
-    tableSchema: StructType) extends Scan with Batch {
+    tableSchema: StructType,
+    planningClient: ServerSidePlanningClient) extends Scan with Batch {
 
   override def readSchema(): StructType = tableSchema
 
@@ -88,7 +85,7 @@ class ServerSidePlannedScan(
 
   override def planInputPartitions(): Array[InputPartition] = {
     // Call the server-side planning API to get the scan plan
-    val scanPlan = client.planScan(database, tableName)
+    val scanPlan = planningClient.planScan(database, tableName)
 
     // Convert each file to an InputPartition
     scanPlan.files.map { file =>
@@ -111,7 +108,7 @@ case class ServerSidePlannedFileInputPartition(
 
 /**
  * Factory for creating PartitionReaders that read server-side planned files.
- * Builds reader functions on the driver for each file format.
+ * Builds reader functions on the driver for Parquet files.
  */
 class ServerSidePlannedFilePartitionReaderFactory(schema: StructType)
     extends PartitionReaderFactory {
@@ -124,8 +121,8 @@ class ServerSidePlannedFilePartitionReaderFactory(schema: StructType)
   private val hadoopConf = new SerializableConfiguration(spark.sessionState.newHadoopConf())
   // scalastyle:on deltahadoopconfiguration
 
-  // Pre-build reader functions for each file format on the driver
-  // These functions will be serialized and sent to executors
+  // Pre-build reader function for Parquet on the driver
+  // This function will be serialized and sent to executors
   private val parquetReaderBuilder = new ParquetFileFormat().buildReaderWithPartitionValues(
     sparkSession = spark,
     dataSchema = schema,
@@ -138,56 +135,18 @@ class ServerSidePlannedFilePartitionReaderFactory(schema: StructType)
     hadoopConf = hadoopConf.value
   )
 
-  private val orcReaderBuilder = new OrcFileFormat().buildReaderWithPartitionValues(
-    sparkSession = spark,
-    dataSchema = schema,
-    partitionSchema = StructType(Nil),
-    requiredSchema = schema,
-    filters = Seq.empty,
-    options = Map(
-      FileFormat.OPTION_RETURNING_BATCH -> "false"
-    ),
-    hadoopConf = hadoopConf.value
-  )
-
-  private val csvReaderBuilder = new CSVFileFormat().buildReaderWithPartitionValues(
-    sparkSession = spark,
-    dataSchema = schema,
-    partitionSchema = StructType(Nil),
-    requiredSchema = schema,
-    filters = Seq.empty,
-    options = Map.empty[String, String],
-    hadoopConf = hadoopConf.value
-  )
-
-  private val jsonReaderBuilder = new JsonFileFormat().buildReaderWithPartitionValues(
-    sparkSession = spark,
-    dataSchema = schema,
-    partitionSchema = StructType(Nil),
-    requiredSchema = schema,
-    filters = Seq.empty,
-    options = Map.empty[String, String],
-    hadoopConf = hadoopConf.value
-  )
-
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
     val filePartition = partition.asInstanceOf[ServerSidePlannedFileInputPartition]
 
-    // Select the appropriate reader builder based on file format
-    val readerBuilder = {
-      // scalastyle:off caselocale
-      filePartition.fileFormat.toLowerCase(Locale.ROOT) match {
-      // scalastyle:on caselocale
-        case "parquet" => parquetReaderBuilder
-        case "orc" => orcReaderBuilder
-        case "csv" => csvReaderBuilder
-        case "json" => jsonReaderBuilder
-        case other => throw new UnsupportedOperationException(
-          s"File format '$other' is not supported. Supported formats: parquet, orc, csv, json")
-      }
+    // Verify file format is Parquet
+    // scalastyle:off caselocale
+    if (filePartition.fileFormat.toLowerCase(Locale.ROOT) != "parquet") {
+    // scalastyle:on caselocale
+      throw new UnsupportedOperationException(
+        s"File format '${filePartition.fileFormat}' is not supported. Only Parquet is supported.")
     }
 
-    new ServerSidePlannedFilePartitionReader(filePartition, readerBuilder)
+    new ServerSidePlannedFilePartitionReader(filePartition, parquetReaderBuilder)
   }
 }
 

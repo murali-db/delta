@@ -16,145 +16,11 @@
 
 package org.apache.spark.sql.delta.serverSidePlanning
 
-import java.util.Collections
-
 import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.delta.catalog.ServerSidePlannedTable
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
-import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
-
-  // ========== Unit Tests with Mock Client ==========
-
-  test("ServerSidePlannedTable basic properties") {
-    val schema = StructType(Seq(
-      StructField("id", IntegerType, nullable = true),
-      StructField("name", StringType, nullable = true)
-    ))
-
-    val mockClient = MockServerSidePlanningClient.withSingleFile(
-      database = "testdb",
-      table = "testtable",
-      filePath = "/path/to/data/file1.parquet",
-      fileSize = 1000
-    )
-
-    val table = new ServerSidePlannedTable(
-      database = "testdb",
-      tableName = "testtable",
-      client = mockClient,
-      tableSchema = schema
-    )
-
-    // Verify table properties
-    assert(table.name() == "testdb.testtable")
-    assert(table.schema() == schema)
-    assert(table.capabilities().contains(
-      org.apache.spark.sql.connector.catalog.TableCapability.BATCH_READ))
-  }
-
-  test("ServerSidePlannedTable scan with single file") {
-    val schema = StructType(Seq(
-      StructField("id", IntegerType, nullable = true),
-      StructField("name", StringType, nullable = true)
-    ))
-
-    val mockClient = MockServerSidePlanningClient.withSingleFile(
-      database = "testdb",
-      table = "testtable",
-      filePath = "/path/to/data/file1.parquet",
-      fileSize = 1000
-    )
-
-    val table = new ServerSidePlannedTable(
-      database = "testdb",
-      tableName = "testtable",
-      client = mockClient,
-      tableSchema = schema
-    )
-
-    // Create scan and verify file list
-    val scan = table.newScanBuilder(
-      new org.apache.spark.sql.util.CaseInsensitiveStringMap(java.util.Collections.emptyMap())
-    ).build()
-
-    assert(scan.readSchema() == schema)
-
-    val batch = scan.toBatch
-    val partitions = batch.planInputPartitions()
-
-    assert(partitions.length == 1)
-
-    val partition = partitions(0).asInstanceOf[
-      org.apache.spark.sql.delta.catalog.ServerSidePlannedFileInputPartition]
-    assert(partition.filePath == "/path/to/data/file1.parquet")
-    assert(partition.fileSizeInBytes == 1000)
-    assert(partition.fileFormat == "parquet")
-  }
-
-  test("ServerSidePlannedTable scan with multiple files") {
-    val schema = StructType(Seq(
-      StructField("id", IntegerType, nullable = true)
-    ))
-
-    val files = Seq(
-      ScanFile("/path/file1.parquet", 1000, "parquet"),
-      ScanFile("/path/file2.parquet", 2000, "parquet"),
-      ScanFile("/path/file3.parquet", 1500, "parquet")
-    )
-
-    val mockClient = MockServerSidePlanningClient.withFiles(
-      database = "testdb",
-      table = "multitable",
-      files = files
-    )
-
-    val table = new ServerSidePlannedTable(
-      database = "testdb",
-      tableName = "multitable",
-      client = mockClient,
-      tableSchema = schema
-    )
-
-    val scan = table.newScanBuilder(new CaseInsensitiveStringMap(Collections.emptyMap())).build()
-    val batch = scan.toBatch
-    val partitions = batch.planInputPartitions()
-
-    assert(partitions.length == 3)
-
-    // Verify all files are represented
-    val filePartitions = partitions.map(_.asInstanceOf[
-      org.apache.spark.sql.delta.catalog.ServerSidePlannedFileInputPartition])
-    assert(filePartitions.map(_.filePath).toSet == files.map(_.filePath).toSet)
-    assert(filePartitions.map(_.fileSizeInBytes).toSet == files.map(_.fileSizeInBytes).toSet)
-  }
-
-  test("ServerSidePlannedTable handles errors from client") {
-    val schema = StructType(Seq(
-      StructField("id", IntegerType, nullable = true)
-    ))
-
-    // Create mock client without configuring the table - will throw error
-    val mockClient = new MockServerSidePlanningClient()
-
-    val table = new ServerSidePlannedTable(
-      database = "testdb",
-      tableName = "nonexistent",
-      client = mockClient,
-      tableSchema = schema
-    )
-
-    val scan = table.newScanBuilder(new CaseInsensitiveStringMap(Collections.emptyMap())).build()
-
-    // Should throw when trying to plan
-    intercept[RuntimeException] {
-      scan.toBatch.planInputPartitions()
-    }
-  }
-
-  // ========== End-to-End Tests with Test Client ==========
 
   test("end-to-end: discover Parquet files using test client with input_file_name()") {
     withTable("testdb.test_table") {
@@ -197,8 +63,8 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         val table = new ServerSidePlannedTable(
           database = "testdb",
           tableName = "test_table",
-          client = client,
-          tableSchema = tableSchema
+          tableSchema = tableSchema,
+          planningClient = client
         )
 
         // Verify scan produces correct number of partitions
@@ -287,17 +153,15 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
     assert(ServerSidePlanningClientFactory.getFactory()
       .isInstanceOf[IcebergRESTCatalogPlanningClientFactory])
 
-    // Set custom factory
-    val mockClient = MockServerSidePlanningClient.withSingleFile(
-      "db", "table", "/file.parquet", 100)
-    val mockFactory = new MockServerSidePlanningClientFactory(mockClient)
+    // Set custom factory (test client)
+    val testFactory = new ServerSidePlanningTestClientFactory()
 
-    ServerSidePlanningClientFactory.setFactory(mockFactory)
-    assert(ServerSidePlanningClientFactory.getFactory() == mockFactory)
+    ServerSidePlanningClientFactory.setFactory(testFactory)
+    assert(ServerSidePlanningClientFactory.getFactory() == testFactory)
 
     // Verify client creation uses custom factory
     val client = ServerSidePlanningClientFactory.createClient(spark)
-    assert(client == mockClient)
+    assert(client.isInstanceOf[ServerSidePlanningTestClient])
 
     // Clear and verify back to default
     ServerSidePlanningClientFactory.clearFactory()

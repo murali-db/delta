@@ -56,6 +56,13 @@ trait ServerSidePlanningClient {
  * This allows for configurable implementations (REST, mock, Spark-based, etc.)
  */
 trait ServerSidePlanningClientFactory {
+  /**
+   * Create a client using hardcoded configuration keys.
+   * This is primarily used for testing. Production code should use buildForCatalog.
+   *
+   * @param spark The SparkSession
+   * @return A ServerSidePlanningClient
+   */
   def createClient(spark: SparkSession): ServerSidePlanningClient
 
   /**
