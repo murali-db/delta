@@ -49,6 +49,9 @@ class ServerSidePlannedTable(
     planningClient: ServerSidePlanningClient,
     deltaLog: DeltaLog) extends Table with SupportsRead {
 
+  // Returns fully qualified name (e.g., "catalog.database.table").
+  // The database parameter receives ident.namespace().mkString(".") from DeltaCatalog,
+  // which includes the catalog name when present, similar to DeltaTableV2's name() method.
   override def name(): String = s"$database.$tableName"
 
   override def schema(): StructType = tableSchema
