@@ -136,3 +136,9 @@ override.tf.json
 # Ignore kernel benchmark report
 kernel/kernel-defaults/benchmark_report.json
 
+
+# Claude Code session files
+.claude/
+
+# Bazel BSP files
+.bazelbsp/
