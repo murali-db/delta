@@ -62,24 +62,28 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     }
   }
 
+  // Tests direct instantiation of IcebergRESTCatalogPlanningClient.
+  // Creates the client by calling the constructor directly with explicit URI parameter.
+  // Verifies the client can successfully plan a scan on an empty unpartitioned table.
+  // TODO: Add tests for non-empty tables with data files.
+  // TODO: Add tests for partitioned tables (currently unsupported, should throw exception).
   test("basic plan table scan via IcebergRESTCatalogPlanningClient") {
     withTempTable("testTable") { table =>
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
       val scanPlan = client.planScan(defaultNamespace.toString, "testTable")
-      // Verify we get a valid scan plan back
-      assert(scanPlan != null)
-      assert(scanPlan.files != null)
-      // Empty table should have 0 files
-      // Note: This test uses an unpartitioned table (spec ID 0). The client currently only
-      // supports unpartitioned tables and throws UnsupportedOperationException for partitioned
-      // tables in IcebergRESTCatalogPlanningClient.convertToScanPlan when file.partition().size() > 0.
-      assert(scanPlan.files.isEmpty, s"Expected 0 files for empty table, got ${scanPlan.files.length}")
+
+      assert(scanPlan != null, "Scan plan should not be null")
+      assert(scanPlan.files != null, "Scan plan files should not be null")
+      assert(scanPlan.files.isEmpty, s"Empty table should have 0 files, got ${scanPlan.files.length}")
     }
   }
 
+  // Tests factory-based client instantiation via IcebergRESTCatalogPlanningClientFactory.
+  // Creates a SparkSession with Iceberg REST catalog configuration, then uses the factory
+  // to read the configuration and construct a client. Verifies the factory correctly
+  // extracts URI and token from SparkSession config and creates a working client.
   test("IcebergRESTCatalogPlanningClientFactory creates client with catalog config") {
-    withTempTable("testTable") { table =>
-      // Create a mock SparkSession with catalog configuration
+    withTempTable("emptyTable") { table =>
       val spark = org.apache.spark.sql.SparkSession.builder()
         .master("local[1]")
         .appName("IcebergRESTCatalogPlanningClientFactoryTest")
@@ -91,11 +95,10 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
         val factory = new IcebergRESTCatalogPlanningClientFactory()
         val client = factory.buildForCatalog(spark, "test_catalog")
 
-        // Verify client can be used to plan scans
-        val scanPlan = client.planScan(defaultNamespace.toString, "testTable")
-        assert(scanPlan != null)
-        assert(scanPlan.files != null)
-        assert(scanPlan.files.isEmpty)
+        val scanPlan = client.planScan(defaultNamespace.toString, "emptyTable")
+        assert(scanPlan != null, "Scan plan should not be null")
+        assert(scanPlan.files != null, "Scan plan files should not be null")
+        assert(scanPlan.files.isEmpty, s"Empty table should have 0 files, got ${scanPlan.files.length}")
       } finally {
         spark.stop()
       }
