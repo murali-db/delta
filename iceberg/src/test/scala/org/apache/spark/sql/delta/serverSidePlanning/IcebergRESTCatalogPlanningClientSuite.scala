@@ -98,6 +98,55 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     }
   }
 
+  // Tests that partitioned tables include partition data in the response.
+  // The client is designed to reject partitioned tables, but we can't test the full
+  // client flow due to REST parser issues. Instead, we verify the server correctly
+  // returns partition data in the JSON response.
+  test("plan scan on partitioned table returns partition data") {
+    val partitionedSpec = PartitionSpec.builderFor(defaultSchema)
+      .identity("name")
+      .build()
+
+    val tableId = TableIdentifier.of(defaultNamespace, "partitionedTable")
+    val table = catalog.createTable(tableId, defaultSchema, partitionedSpec)
+
+    try {
+
+      // Add a data file with partition data
+      addDataFileToTable(
+        table,
+        s"${table.location()}/data/name=test/file1.parquet",
+        recordCount = 100,
+        partitionPath = Some("name=test"))
+
+      // Get the plan response and verify it contains partition data
+      val jsonResponse = getPlanResponse(defaultNamespace.toString, "partitionedTable", table)
+      val fileScanTasks = jsonResponse.get("file-scan-tasks")
+
+      assert(fileScanTasks != null && fileScanTasks.isArray, "Response should have file-scan-tasks")
+      assert(fileScanTasks.size() > 0, "Should have at least one file")
+
+      // Check first file has partition data
+      val firstTask = fileScanTasks.get(0)
+      val dataFile = firstTask.get("data-file")
+      assert(dataFile != null, "Task should have data-file")
+
+      // Verify partition field exists and is non-empty
+      // Note: Iceberg uses spec-id 0 for the first spec even if partitioned,
+      // so we check the partition object size instead
+      val partition = dataFile.get("partition")
+      assert(partition != null, "Data file should have partition field")
+      assert(partition.size() > 0,
+        s"Partition should be non-empty for partitioned table, got: $partition")
+
+      // Verify the table itself is partitioned (not unpartitioned)
+      assert(!table.spec().isUnpartitioned,
+        "Table spec should be partitioned")
+    } finally {
+      catalog.dropTable(tableId, false)
+    }
+  }
+
   // Tests factory-based client instantiation via IcebergRESTCatalogPlanningClientFactory.
   // Creates a SparkSession with Iceberg REST catalog configuration, then uses the factory
   // to read the configuration and construct a client. Verifies the factory correctly
@@ -235,11 +284,13 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
    * @param table Iceberg table to add the file to (shaded type)
    * @param filePath Path where the parquet file will be written
    * @param recordCount Number of records to write
+   * @param partitionPath Optional partition path (e.g., "name=test") for partitioned tables
    */
   private def addDataFileToTable(
       table: Table,
       filePath: String,
-      recordCount: Int = 100): Unit = {
+      recordCount: Int = 100,
+      partitionPath: Option[String] = None): Unit = {
 
     // Create unshaded schema matching the table schema for writing
     val unshadedSchema = new org.apache.iceberg.Schema(
@@ -300,12 +351,17 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     val inputFile = table.io().newInputFile(filePath)
     val metrics = fileAppender.metrics()
 
-    val dataFile = DataFiles.builder(table.spec())
+    val dataFileBuilder = DataFiles.builder(table.spec())
       .withInputFile(inputFile)
       .withFormat(FileFormat.PARQUET)
       .withRecordCount(metrics.recordCount())
       .withSplitOffsets(splitOffsets)
-      .build()
+
+    // Add partition path if provided (for partitioned tables)
+    val dataFile = partitionPath match {
+      case Some(path) => dataFileBuilder.withPartitionPath(path).build()
+      case None => dataFileBuilder.build()
+    }
 
     table.newAppend()
       .appendFile(dataFile)
