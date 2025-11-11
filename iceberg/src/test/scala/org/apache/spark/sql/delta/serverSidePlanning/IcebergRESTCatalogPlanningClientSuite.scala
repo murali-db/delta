@@ -99,9 +99,13 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
   }
 
   // Tests that partitioned tables include partition data in the response.
-  // The client is designed to reject partitioned tables, but we can't test the full
-  // client flow due to REST parser issues. Instead, we verify the server correctly
-  // returns partition data in the JSON response.
+  // NOTE: The client has validation logic (IcebergRESTCatalogPlanningClient.scala:152-157)
+  // that throws UnsupportedOperationException when it encounters partition data.
+  // However, we can't test that exception path because the shaded Iceberg REST parser
+  // fails with NoSuchElementException during deserialization before reaching the
+  // validation logic. This test verifies the server correctly returns partition data
+  // in the JSON response, which confirms partitioned tables would be detected if the
+  // parser worked properly.
   test("plan scan on partitioned table returns partition data") {
     val partitionedSpec = PartitionSpec.builderFor(defaultSchema)
       .identity("name")
