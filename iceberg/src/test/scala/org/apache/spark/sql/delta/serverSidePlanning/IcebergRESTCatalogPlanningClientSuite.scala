@@ -108,13 +108,12 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     }
   }
 
-  // Tests that the parser bug is fixed - it can now handle responses with empty
-  // delete-file-references arrays without crashing with NoSuchElementException.
-  // Note: This uses a partitioned table, but the test server doesn't populate the
-  // DataFile.partition() field, so the client's partition validation at line 160
-  // doesn't trigger. This test only verifies the parser doesn't crash, not the
-  // partition validation logic (which would require a real Iceberg REST server).
-  test("plan scan with empty delete-file-references does not crash parser") {
+  // Tests that the parser bug is fixed and can handle partitioned tables without crashing.
+  // Note: The test server doesn't preserve DataFile.partition() data through the
+  // commit/serialize/deserialize cycle, so the client's partition validation doesn't trigger.
+  // This test verifies the parser doesn't crash on empty delete-file-references arrays.
+  // TODO: Update test server to properly serialize partition data to test validation logic.
+  test("plan scan on partitioned table does not crash parser") {
     val partitionedSpec = PartitionSpec.builderFor(defaultSchema)
       .identity("name")
       .build()
@@ -131,9 +130,9 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
 
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
       try {
+        // Should not crash with NoSuchElementException on empty delete-file-references
         val scanPlan = client.planScan(defaultNamespace.toString, "partitionedTable")
         assert(scanPlan != null, "Scan plan should not be null")
-        assert(scanPlan.files != null, "Scan plan files should not be null")
         assert(scanPlan.files.length == 1, s"Expected 1 file but got ${scanPlan.files.length}")
       } finally {
         client.close()
@@ -270,6 +269,8 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
       .withSplitOffsets(splitOffsets)
 
     // Add partition path if provided (for partitioned tables)
+    // Note: The test server doesn't preserve partition() data through serialization,
+    // so we only set withPartitionPath() for now
     val dataFile = partitionPath match {
       case Some(path) => dataFileBuilder.withPartitionPath(path).build()
       case None => dataFileBuilder.build()
