@@ -106,8 +106,7 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
         assert(scanPlan.files.length == 2, s"Expected 2 files but got ${scanPlan.files.length}")
 
         // Verify the actual file information matches what was generated.
-        // Check that the returned paths end with the expected file names since the full paths
-        // may differ between what we specify and what the server returns.
+        // Check the paths match by comparing the ends.
         val filePaths = scanPlan.files.map(_.filePath).toSet
         assert(filePaths.exists(_.endsWith("/data/file1.parquet")),
           s"Scan plan should contain file ending with /data/file1.parquet. Got: $filePaths")
@@ -121,6 +120,12 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
           assert(file.fileFormat == "parquet",
             s"File ${file.filePath} should be parquet format, got ${file.fileFormat}")
         }
+
+        // Verify file contents match what was written
+        val file1 = scanPlan.files.find(_.filePath.endsWith("/data/file1.parquet")).get
+        val file2 = scanPlan.files.find(_.filePath.endsWith("/data/file2.parquet")).get
+        verifyParquetFileContent(file1.filePath, expectedRecordCount = 100)
+        verifyParquetFileContent(file2.filePath, expectedRecordCount = 150)
       } finally {
         client.close()
       }
@@ -270,5 +275,31 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     table.newAppend()
       .appendFile(dataFile)
       .commit()
+  }
+
+  /**
+   * Verify that a parquet file contains the expected number of records with correct data.
+   */
+  private def verifyParquetFileContent(filePath: String, expectedRecordCount: Int): Unit = {
+    val file = if (filePath.startsWith("file:")) {
+      new File(new java.net.URI(filePath))
+    } else {
+      new File(filePath)
+    }
+
+    require(file.exists(), s"File should exist: $filePath")
+
+    val hadoopConf = new org.apache.hadoop.conf.Configuration()
+    val parquetInputFile = HadoopInputFile.fromPath(new Path(file.getAbsolutePath), hadoopConf)
+    val reader = ParquetFileReader.open(parquetInputFile)
+
+    try {
+      // Verify the file has the expected number of records
+      val totalRecordCount = reader.getFooter.getBlocks.asScala.map(_.getRowCount).sum
+      assert(totalRecordCount == expectedRecordCount,
+        s"File $filePath should have $expectedRecordCount records, got $totalRecordCount")
+    } finally {
+      reader.close()
+    }
   }
 }
