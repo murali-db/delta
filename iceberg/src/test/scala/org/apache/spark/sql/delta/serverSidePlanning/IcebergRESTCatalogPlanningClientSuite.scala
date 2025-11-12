@@ -108,39 +108,13 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     }
   }
 
-  // Tests that the parser bug is fixed and can handle partitioned tables without crashing.
-  // Note: The test server doesn't preserve DataFile.partition() data through the
-  // commit/serialize/deserialize cycle, so the client's partition validation doesn't trigger.
-  // This test verifies the parser doesn't crash on empty delete-file-references arrays.
-  // TODO: Update test server to properly serialize partition data to test validation logic.
-  test("plan scan on partitioned table does not crash parser") {
-    val partitionedSpec = PartitionSpec.builderFor(defaultSchema)
-      .identity("name")
-      .build()
-
-    val tableId = TableIdentifier.of(defaultNamespace, "partitionedTable")
-    val table = catalog.createTable(tableId, defaultSchema, partitionedSpec)
-
-    try {
-      addDataFileToTable(
-        table,
-        s"${table.location()}/data/name=test/file1.parquet",
-        recordCount = 100,
-        partitionPath = Some("name=test"))
-
-      val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
-      try {
-        // Should not crash with NoSuchElementException on empty delete-file-references
-        val scanPlan = client.planScan(defaultNamespace.toString, "partitionedTable")
-        assert(scanPlan != null, "Scan plan should not be null")
-        assert(scanPlan.files.length == 1, s"Expected 1 file but got ${scanPlan.files.length}")
-      } finally {
-        client.close()
-      }
-    } finally {
-      catalog.dropTable(tableId, false)
-    }
-  }
+  // TODO: Add test for partitioned table rejection
+  // Once the test server (IcebergRESTCatalogAdapterWithPlanSupport) properly retains and serves
+  // partition data through the commit/serialize/deserialize cycle, add a test that verifies:
+  // 1. Creates a partitioned table with data files containing partition info
+  // 2. Calls client.planScan() and expects UnsupportedOperationException
+  // 3. Verifies exception message contains "partition data"
+  // This will test the client's partition validation logic at IcebergRESTCatalogPlanningClient:160-164
 
   private def startServer(): IcebergRESTServer = {
     val config = Map(IcebergRESTServer.REST_PORT -> "0").asJava
@@ -269,8 +243,6 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
       .withSplitOffsets(splitOffsets)
 
     // Add partition path if provided (for partitioned tables)
-    // Note: The test server doesn't preserve partition() data through serialization,
-    // so we only set withPartitionPath() for now
     val dataFile = partitionPath match {
       case Some(path) => dataFileBuilder.withPartitionPath(path).build()
       case None => dataFileBuilder.build()
