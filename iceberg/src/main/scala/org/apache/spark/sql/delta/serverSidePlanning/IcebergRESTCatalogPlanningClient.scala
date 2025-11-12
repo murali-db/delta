@@ -149,13 +149,7 @@ class IcebergRESTCatalogPlanningClient(
       require(task.file() != null, "DataFile cannot be null")
       val file = task.file()
 
-      // Validate that table is unpartitioned. Partitioned tables (spec ID != 0) are not
-      // supported yet. Supporting partitioned tables would require changes in multiple places:
-      // 1. Parsing partition specs from server response (currently hardcoded to unpartitioned)
-      // 2. Converting partition values to InternalRow format
-      // 3. Passing partition values to ServerSidePlannedFilePartitionReader
-      // This validation ensures we fail fast with a clear error message rather than producing
-      // incorrect results or cryptic errors later.
+      // Validate that table is unpartitioned. Partitioned tables are not supported yet.
       if (file.partition().size() > 0) {
         throw new UnsupportedOperationException(
           s"Partitioned tables are not supported yet. " +
