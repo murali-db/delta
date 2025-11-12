@@ -81,6 +81,13 @@ class IcebergRESTCatalogPlanningClient(
     .build()
 
   override def planScan(database: String, table: String): ScanPlan = {
+    // TODO: Follow Iceberg REST catalog spec for proper path construction. Per the spec, clients
+    // should first call GET /v1/config to retrieve catalog configuration including the optional
+    // "prefix" parameter in the overrides section (e.g., overrides.prefix). This prefix should
+    // then be used to construct all subsequent API paths as /v1/{prefix}/namespaces/... instead
+    // of hardcoding /v1/namespaces/... This allows catalogs to support multi-tenant hierarchies
+    // (e.g., AWS Glue uses /catalogs/{catalog}, S3 Tables uses table bucket ARNs).
+    // See: https://iceberg.apache.org/rest-catalog-spec/
     val planTableScanUri =
       s"$icebergRestCatalogUriRoot/v1/namespaces/$database/tables/$table/plan"
 
