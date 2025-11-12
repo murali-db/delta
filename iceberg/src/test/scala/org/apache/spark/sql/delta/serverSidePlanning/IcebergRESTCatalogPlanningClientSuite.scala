@@ -308,9 +308,7 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
 
     // Extract split offsets from the actual parquet file by reading block metadata
     // This is the correct way - split offsets are the starting positions of parquet row groups
-    // scalastyle:off deltahadoopconfiguration
     val hadoopConf = new org.apache.hadoop.conf.Configuration()
-    // scalastyle:on deltahadoopconfiguration
     val parquetInputFile = HadoopInputFile.fromPath(new Path(tempFile.getAbsolutePath), hadoopConf)
     val splitOffsets = {
       val reader = ParquetFileReader.open(parquetInputFile)
