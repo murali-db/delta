@@ -22,12 +22,10 @@ import java.io.File
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.apache.http.HttpHeaders
-import org.apache.http.HttpStatus
-import org.apache.http.client.methods.{HttpGet, HttpPost}
-import org.apache.http.entity.{ContentType, StringEntity}
+import org.apache.http.client.methods.HttpGet
+import org.apache.http.entity.ContentType
 import org.apache.http.impl.client.HttpClientBuilder
 import org.apache.http.message.BasicHeader
-import org.apache.http.util.EntityUtils
 import org.apache.iceberg.{Files => IcebergFiles}
 import org.apache.iceberg.data.GenericRecord
 import org.apache.iceberg.data.parquet.GenericParquetWriter
@@ -76,38 +74,47 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
   }
 
   // Tests that the REST /plan endpoint returns 0 files for an empty table.
-  // Uses Jackson to parse JSON directly due to bug in shaded Iceberg deserializer.
   test("basic plan table scan via IcebergRESTCatalogPlanningClient") {
     withTempTable("testTable") { table =>
-      val fileCount = countDataFilesInPlanResponse(defaultNamespace.toString, "testTable", table)
-      assert(fileCount == 0, s"Empty table should have 0 files, got $fileCount")
+      val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
+      try {
+        val scanPlan = client.planScan(defaultNamespace.toString, "testTable")
+        assert(scanPlan != null, "Scan plan should not be null")
+        assert(scanPlan.files != null, "Scan plan files should not be null")
+        assert(scanPlan.files.isEmpty, s"Empty table should have 0 files, got ${scanPlan.files.length}")
+      } finally {
+        client.close()
+      }
     }
   }
 
   // Tests that the REST /plan endpoint returns the correct number of files for a non-empty table.
-  // Creates a table, writes actual parquet files with data, then verifies the response includes
-  // them. Uses Jackson to parse JSON directly due to bug in shaded Iceberg deserializer.
+  // Creates a table, writes actual parquet files with data, then verifies the response includes them.
   test("plan scan on non-empty table with data files") {
     withTempTable("tableWithData") { table =>
       // Add two data files with actual parquet data
       addDataFileToTable(table, s"${table.location()}/data/file1.parquet", recordCount = 100)
       addDataFileToTable(table, s"${table.location()}/data/file2.parquet", recordCount = 150)
 
-      val fileCount = countDataFilesInPlanResponse(
-        defaultNamespace.toString, "tableWithData", table)
-      assert(fileCount == 2, s"Expected 2 files but got $fileCount")
+      val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
+      try {
+        val scanPlan = client.planScan(defaultNamespace.toString, "tableWithData")
+        assert(scanPlan != null, "Scan plan should not be null")
+        assert(scanPlan.files != null, "Scan plan files should not be null")
+        assert(scanPlan.files.length == 2, s"Expected 2 files but got ${scanPlan.files.length}")
+      } finally {
+        client.close()
+      }
     }
   }
 
-  // Tests that partitioned tables include partition data in the response.
-  // NOTE: The client has validation logic (IcebergRESTCatalogPlanningClient.scala:152-157)
-  // that throws UnsupportedOperationException when it encounters partition data.
-  // However, we can't test that exception path because the shaded Iceberg REST parser
-  // fails with NoSuchElementException during deserialization before reaching the
-  // validation logic. This test verifies the server correctly returns partition data
-  // in the JSON response, which confirms partitioned tables would be detected if the
-  // parser worked properly.
-  test("plan scan on partitioned table returns partition data") {
+  // Tests that the parser bug is fixed - it can now handle responses with empty
+  // delete-file-references arrays without crashing with NoSuchElementException.
+  // Note: This uses a partitioned table, but the test server doesn't populate the
+  // DataFile.partition() field, so the client's partition validation at line 160
+  // doesn't trigger. This test only verifies the parser doesn't crash, not the
+  // partition validation logic (which would require a real Iceberg REST server).
+  test("plan scan with empty delete-file-references does not crash parser") {
     val partitionedSpec = PartitionSpec.builderFor(defaultSchema)
       .identity("name")
       .build()
@@ -116,37 +123,21 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     val table = catalog.createTable(tableId, defaultSchema, partitionedSpec)
 
     try {
-
-      // Add a data file with partition data
       addDataFileToTable(
         table,
         s"${table.location()}/data/name=test/file1.parquet",
         recordCount = 100,
         partitionPath = Some("name=test"))
 
-      // Get the plan response and verify it contains partition data
-      val jsonResponse = getPlanResponse(defaultNamespace.toString, "partitionedTable", table)
-      val fileScanTasks = jsonResponse.get("file-scan-tasks")
-
-      assert(fileScanTasks != null && fileScanTasks.isArray, "Response should have file-scan-tasks")
-      assert(fileScanTasks.size() > 0, "Should have at least one file")
-
-      // Check first file has partition data
-      val firstTask = fileScanTasks.get(0)
-      val dataFile = firstTask.get("data-file")
-      assert(dataFile != null, "Task should have data-file")
-
-      // Verify partition field exists and is non-empty
-      // Note: Iceberg uses spec-id 0 for the first spec even if partitioned,
-      // so we check the partition object size instead
-      val partition = dataFile.get("partition")
-      assert(partition != null, "Data file should have partition field")
-      assert(partition.size() > 0,
-        s"Partition should be non-empty for partitioned table, got: $partition")
-
-      // Verify the table itself is partitioned (not unpartitioned)
-      assert(!table.spec().isUnpartitioned,
-        "Table spec should be partitioned")
+      val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
+      try {
+        val scanPlan = client.planScan(defaultNamespace.toString, "partitionedTable")
+        assert(scanPlan != null, "Scan plan should not be null")
+        assert(scanPlan.files != null, "Scan plan files should not be null")
+        assert(scanPlan.files.length == 1, s"Expected 1 file but got ${scanPlan.files.length}")
+      } finally {
+        client.close()
+      }
     } finally {
       catalog.dropTable(tableId, false)
     }
@@ -196,63 +187,6 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     }
   }
 
-  /**
-   * Helper method to call the /plan REST endpoint and get the parsed JSON response.
-   * Uses Jackson to parse JSON directly to work around a bug in the shaded Iceberg
-   * deserializer that crashes on empty delete-file-references arrays.
-   */
-  private def getPlanResponse(
-      namespace: String,
-      tableName: String,
-      table: Table): com.fasterxml.jackson.databind.JsonNode = {
-    val planUrl = s"$serverUri/v1/namespaces/$namespace/tables/$tableName/plan"
-
-    val httpClient = HttpClientBuilder.create().build()
-    try {
-      val httpPost = new HttpPost(planUrl)
-      httpPost.setHeader(HttpHeaders.ACCEPT, ContentType.APPLICATION_JSON.getMimeType)
-      httpPost.setHeader(HttpHeaders.CONTENT_TYPE, ContentType.APPLICATION_JSON.getMimeType)
-
-      // Build plan request with current snapshot ID (or null for empty tables)
-      val snapshotId = Option(table.currentSnapshot()).map(_.snapshotId()).getOrElse(0L)
-      val requestBody = s"""{"snapshot-id":$snapshotId}"""
-      httpPost.setEntity(new StringEntity(requestBody, ContentType.APPLICATION_JSON))
-
-      val response = httpClient.execute(httpPost)
-      try {
-        val statusCode = response.getStatusLine.getStatusCode
-        val responseBody = EntityUtils.toString(response.getEntity)
-
-        assert(statusCode == HttpStatus.SC_OK,
-          s"Expected HTTP 200 but got $statusCode")
-
-        // Parse and return JSON response
-        val mapper = new ObjectMapper()
-        mapper.readTree(responseBody)
-      } finally {
-        response.close()
-      }
-    } finally {
-      httpClient.close()
-    }
-  }
-
-  /**
-   * Helper method to count data files in a plan response.
-   */
-  private def countDataFilesInPlanResponse(
-      namespace: String,
-      tableName: String,
-      table: Table): Int = {
-    val jsonNode = getPlanResponse(namespace, tableName, table)
-    val fileScanTasks = jsonNode.get("file-scan-tasks")
-
-    if (fileScanTasks != null && fileScanTasks.isArray) {
-      fileScanTasks.size()
-    } else {
-      0
-    }
-  }
 
   /**
    * Add a data file to an Iceberg table by writing actual parquet data.
