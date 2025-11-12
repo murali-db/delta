@@ -18,31 +18,19 @@ package org.apache.spark.sql.delta.serverSidePlanning
 
 import scala.jdk.CollectionConverters._
 
-import java.io.File
-
-import com.fasterxml.jackson.databind.ObjectMapper
 import org.apache.http.HttpHeaders
 import org.apache.http.client.methods.HttpGet
 import org.apache.http.entity.ContentType
 import org.apache.http.impl.client.HttpClientBuilder
 import org.apache.http.message.BasicHeader
-import org.apache.iceberg.{Files => IcebergFiles}
-import org.apache.iceberg.data.GenericRecord
-import org.apache.iceberg.data.parquet.GenericParquetWriter
-import org.apache.iceberg.io.FileAppender
-import org.apache.iceberg.parquet.Parquet
-import org.apache.hadoop.fs.Path
-import org.apache.parquet.hadoop.{ParquetFileReader, ParquetFileWriter}
-import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.sql.delta.serverSidePlanning.{IcebergRESTCatalogPlanningClient, IcebergRESTCatalogPlanningClientFactory}
-import org.scalatest.BeforeAndAfterAll
-import org.scalatest.funsuite.AnyFunSuite
-import shadedForDelta.org.apache.iceberg.{DataFiles, FileFormat, PartitionSpec, Schema, Table}
+import org.apache.spark.sql.QueryTest
+import org.apache.spark.sql.test.SharedSparkSession
+import shadedForDelta.org.apache.iceberg.{PartitionSpec, Schema, Table}
 import shadedForDelta.org.apache.iceberg.catalog._
 import shadedForDelta.org.apache.iceberg.rest.IcebergRESTServer
 import shadedForDelta.org.apache.iceberg.types.Types
 
-class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAfterAll {
+class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSession {
 
   private val defaultNamespace = Namespace.of("testDatabase")
   private val defaultSchema = new Schema(
@@ -56,6 +44,12 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
 
   override def beforeAll(): Unit = {
     super.beforeAll()
+
+    // Configure Spark to use the Iceberg REST catalog
+    spark.conf.set(s"spark.sql.catalog.rest_catalog", "org.apache.iceberg.spark.SparkCatalog")
+    spark.conf.set(s"spark.sql.catalog.rest_catalog.type", "rest")
+    spark.conf.set(s"spark.sql.catalog.rest_catalog.uri", serverUri)
+
     if (catalog.isInstanceOf[SupportsNamespaces]) {
       catalog.asInstanceOf[SupportsNamespaces].createNamespace(defaultNamespace)
     } else {
@@ -92,11 +86,26 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
   // Creates a table, writes actual parquet files with data, then verifies the response includes them.
   test("plan scan on non-empty table with data files") {
     withTempTable("tableWithData") { table =>
-      // Add two data files with actual parquet data
-      val file1Path = s"${table.location()}/data/file1.parquet"
-      val file2Path = s"${table.location()}/data/file2.parquet"
-      addDataFileToTable(table, file1Path, recordCount = 100)
-      addDataFileToTable(table, file2Path, recordCount = 150)
+      // Write data to the table using Spark
+      val tableName = s"rest_catalog.${defaultNamespace}.tableWithData"
+
+      // Write first batch of data (coalesce to 1 file)
+      spark.range(100)
+        .selectExpr("id", "concat('test_', id) as name")
+        .coalesce(1)
+        .write
+        .format("iceberg")
+        .mode("append")
+        .save(tableName)
+
+      // Write second batch of data (coalesce to 1 file)
+      spark.range(100, 250)
+        .selectExpr("id", "concat('test_', id) as name")
+        .coalesce(1)
+        .write
+        .format("iceberg")
+        .mode("append")
+        .save(tableName)
 
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
       try {
@@ -105,12 +114,11 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
         assert(scanPlan.files != null, "Scan plan files should not be null")
         assert(scanPlan.files.length == 2, s"Expected 2 files but got ${scanPlan.files.length}")
 
-        // Verify the file paths match by comparing the ends.
-        val filePaths = scanPlan.files.map(_.filePath).toSet
-        assert(filePaths.exists(_.endsWith("/data/file1.parquet")),
-          s"Scan plan should contain file ending with /data/file1.parquet. Got: $filePaths")
-        assert(filePaths.exists(_.endsWith("/data/file2.parquet")),
-          s"Scan plan should contain file ending with /data/file2.parquet. Got: $filePaths")
+        // Verify the file paths end with .parquet
+        scanPlan.files.foreach { file =>
+          assert(file.filePath.endsWith(".parquet"),
+            s"File path should end with .parquet: ${file.filePath}")
+        }
       } finally {
         client.close()
       }
@@ -170,95 +178,4 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
   }
 
 
-  /**
-   * Add a data file to an Iceberg table by writing actual parquet data.
-   * Uses unshaded parquet utilities to write to a local file, then shaded utilities to add it.
-   * Based on the pattern from Iceberg's TestSparkParquetWriter.
-   *
-   * @param table Iceberg table to add the file to (shaded type)
-   * @param filePath Path where the parquet file will be written
-   * @param recordCount Number of records to write
-   * @param partitionPath Optional partition path (e.g., "name=test") for partitioned tables
-   */
-  private def addDataFileToTable(
-      table: Table,
-      filePath: String,
-      recordCount: Int = 100,
-      partitionPath: Option[String] = None): Unit = {
-
-    // Create unshaded schema matching the table schema for writing
-    val unshadedSchema = new org.apache.iceberg.Schema(
-      org.apache.iceberg.types.Types.NestedField.required(
-        1, "id", org.apache.iceberg.types.Types.LongType.get),
-      org.apache.iceberg.types.Types.NestedField.required(
-        2, "name", org.apache.iceberg.types.Types.StringType.get)
-    )
-
-    // Create test records using unshaded types
-    val records = (1 to recordCount).map { i =>
-      val record = GenericRecord.create(unshadedSchema)
-      record.setField("id", i.toLong)
-      record.setField("name", s"test_$i")
-      record
-    }
-
-    // Create a temporary file for writing
-    // Use Files.localOutput to avoid shaded/unshaded FileIO issues
-    // Handle both file:// URIs and plain paths
-    val tempFile = if (filePath.startsWith("file:")) {
-      new File(new java.net.URI(filePath))
-    } else {
-      new File(filePath)
-    }
-    tempFile.getParentFile.mkdirs()
-
-    // Write the parquet file using unshaded parquet utilities
-    val fileAppender: FileAppender[GenericRecord] = Parquet
-      .write(IcebergFiles.localOutput(tempFile))
-      .schema(unshadedSchema)
-      .createWriterFunc(GenericParquetWriter.buildWriter)
-      .overwrite()
-      .build()
-
-    try {
-      fileAppender.addAll(records.asJava)
-    } finally {
-      fileAppender.close()
-    }
-
-    // Extract split offsets from the actual parquet file by reading block metadata
-    // This is the correct way - split offsets are the starting positions of parquet row groups
-    val hadoopConf = new org.apache.hadoop.conf.Configuration()
-    val parquetInputFile = HadoopInputFile.fromPath(new Path(tempFile.getAbsolutePath), hadoopConf)
-    val splitOffsets = {
-      val reader = ParquetFileReader.open(parquetInputFile)
-      try {
-        val blocks = reader.getFooter.getBlocks.asScala
-        val offsets = blocks.map(block => java.lang.Long.valueOf(block.getStartingPos)).sorted.toSeq
-        java.util.Arrays.asList(offsets: _*)
-      } finally {
-        reader.close()
-      }
-    }
-
-    // Now add the file to the table using shaded DataFiles.builder
-    val inputFile = table.io().newInputFile(filePath)
-    val metrics = fileAppender.metrics()
-
-    val dataFileBuilder = DataFiles.builder(table.spec())
-      .withInputFile(inputFile)
-      .withFormat(FileFormat.PARQUET)
-      .withRecordCount(metrics.recordCount())
-      .withSplitOffsets(splitOffsets)
-
-    // Add partition path if provided (for partitioned tables)
-    val dataFile = partitionPath match {
-      case Some(path) => dataFileBuilder.withPartitionPath(path).build()
-      case None => dataFileBuilder.build()
-    }
-
-    table.newAppend()
-      .appendFile(dataFile)
-      .commit()
-  }
 }
