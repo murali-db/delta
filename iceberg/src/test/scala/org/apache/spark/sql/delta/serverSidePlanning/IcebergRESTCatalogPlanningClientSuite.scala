@@ -93,8 +93,10 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
   test("plan scan on non-empty table with data files") {
     withTempTable("tableWithData") { table =>
       // Add two data files with actual parquet data
-      addDataFileToTable(table, s"${table.location()}/data/file1.parquet", recordCount = 100)
-      addDataFileToTable(table, s"${table.location()}/data/file2.parquet", recordCount = 150)
+      val file1Path = s"${table.location()}/data/file1.parquet"
+      val file2Path = s"${table.location()}/data/file2.parquet"
+      addDataFileToTable(table, file1Path, recordCount = 100)
+      addDataFileToTable(table, file2Path, recordCount = 150)
 
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
       try {
@@ -102,6 +104,23 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
         assert(scanPlan != null, "Scan plan should not be null")
         assert(scanPlan.files != null, "Scan plan files should not be null")
         assert(scanPlan.files.length == 2, s"Expected 2 files but got ${scanPlan.files.length}")
+
+        // Verify the actual file information matches what was generated.
+        // Check that the returned paths end with the expected file names since the full paths
+        // may differ between what we specify and what the server returns.
+        val filePaths = scanPlan.files.map(_.filePath).toSet
+        assert(filePaths.exists(_.endsWith("/data/file1.parquet")),
+          s"Scan plan should contain file ending with /data/file1.parquet. Got: $filePaths")
+        assert(filePaths.exists(_.endsWith("/data/file2.parquet")),
+          s"Scan plan should contain file ending with /data/file2.parquet. Got: $filePaths")
+
+        // Verify all files have valid metadata
+        scanPlan.files.foreach { file =>
+          assert(file.fileSizeInBytes > 0,
+            s"File ${file.filePath} should have size > 0, got ${file.fileSizeInBytes}")
+          assert(file.fileFormat == "parquet",
+            s"File ${file.filePath} should be parquet format, got ${file.fileFormat}")
+        }
       } finally {
         client.close()
       }

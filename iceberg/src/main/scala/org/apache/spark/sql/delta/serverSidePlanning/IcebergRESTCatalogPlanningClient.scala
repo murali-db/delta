@@ -39,24 +39,13 @@ import shadedForDelta.org.apache.iceberg.rest.responses.PlanTableScanResponse
  * scan planning. The server returns the list of data files to read, which eliminates the need
  * for client-side listing operations.
  *
- * Current limitations:
- * - Only supports unpartitioned tables (spec ID 0). Partitioned tables will throw
- *   UnsupportedOperationException during scan conversion.
- * - Only supports current snapshot planning (snapshotId = 0). Time-travel queries are not
- *   supported.
- * - Authentication is not yet implemented. The token parameter is accepted but not currently
- *   used. This is planned for future work.
- * - No retry logic for transient failures.
- * - No support for async planning (plan status must be "completed").
- *
  * Thread safety: This class creates a shared HTTP client that is thread-safe for concurrent
  * requests. The HTTP client should be explicitly closed by calling close() when done.
  *
  * @param icebergRestCatalogUriRoot Base URI of the Iceberg REST catalog server, e.g.,
  *                                   "http://localhost:8181". Should not include trailing slash
  *                                   or "/v1" prefix.
- * @param token Authentication token for the catalog server. Currently not used as authentication
- *              is not yet implemented. Planned for future work.
+ * @param token Authentication token for the catalog server.
  */
 class IcebergRESTCatalogPlanningClient(
     icebergRestCatalogUriRoot: String,
@@ -183,9 +172,8 @@ class IcebergRESTCatalogPlanningClient(
     specsById: Map[Int, PartitionSpec],
     caseSensitive: Boolean): PlanTableScanResponse = {
 
-    // Use reflection to access shaded Iceberg parser class since shaded classes
-    // cannot be directly imported. This is required to parse the REST catalog's
-    // PlanTableScan response using the shaded Iceberg library.
+    // Use reflection to access the private fromJson method in the Iceberg parser class.
+    // The method is not part of the public API, so we need reflection and setAccessible.
     // scalastyle:off classforname
     val parserClass = Class.forName(
       "shadedForDelta.org.apache.iceberg.rest.responses.PlanTableScanResponseParser")
