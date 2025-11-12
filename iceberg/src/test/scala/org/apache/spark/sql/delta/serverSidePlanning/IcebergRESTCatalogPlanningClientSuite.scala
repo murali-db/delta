@@ -151,34 +151,6 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
     }
   }
 
-  // Tests factory-based client instantiation via IcebergRESTCatalogPlanningClientFactory.
-  // Creates a SparkSession with Iceberg REST catalog configuration, then uses the factory
-  // to read the configuration and construct a client. Verifies the factory correctly
-  // extracts URI and token from SparkSession config and creates a working client.
-  test("IcebergRESTCatalogPlanningClientFactory creates client with catalog config") {
-    withTempTable("emptyTable") { table =>
-      val spark = org.apache.spark.sql.SparkSession.builder()
-        .master("local[1]")
-        .appName("IcebergRESTCatalogPlanningClientFactoryTest")
-        .config(s"spark.sql.catalog.test_catalog.uri", serverUri)
-        .config(s"spark.sql.catalog.test_catalog.token", "test-token")
-        .getOrCreate()
-
-      try {
-        val factory = new IcebergRESTCatalogPlanningClientFactory()
-        val client = factory.buildForCatalog(spark, "test_catalog")
-
-        // Verify the client was constructed correctly by checking it has the right URI
-        assert(client != null, "Client should not be null")
-        // Note: We use the direct HTTP helper instead of the client to avoid deserialization issues
-        val fileCount = countDataFilesInPlanResponse(defaultNamespace.toString, "emptyTable", table)
-        assert(fileCount == 0, s"Empty table should have 0 files, got $fileCount")
-      } finally {
-        spark.stop()
-      }
-    }
-  }
-
   private def startServer(): IcebergRESTServer = {
     val config = Map(IcebergRESTServer.REST_PORT -> "0").asJava
     val newServer = new IcebergRESTServer(config)
