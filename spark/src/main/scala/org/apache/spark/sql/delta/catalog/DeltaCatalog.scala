@@ -29,7 +29,7 @@ import org.apache.spark.sql.delta.skipping.clustering.ClusteredTableUtils
 import org.apache.spark.sql.delta.skipping.clustering.temp.{ClusterBy, ClusterBySpec}
 import org.apache.spark.sql.delta.skipping.clustering.temp.{ClusterByTransform => TempClusterByTransform}
 import org.apache.spark.sql.delta.{ColumnWithDefaultExprUtils, DeltaConfigs, DeltaErrors, DeltaTableUtils}
-import org.apache.spark.sql.delta.{DeltaLog, DeltaOptions, IdentityColumn}
+import org.apache.spark.sql.delta.{DeltaOptions, IdentityColumn}
 import org.apache.spark.sql.delta.DeltaTableIdentifier.gluePermissionError
 import org.apache.spark.sql.delta.commands._
 import org.apache.spark.sql.delta.constraints.{AddConstraint, DropConstraint}
@@ -44,6 +44,7 @@ import org.apache.spark.sql.delta.util.{Utils => DeltaUtils}
 import org.apache.spark.sql.delta.util.PartitionUtils
 import org.apache.spark.sql.util.ScalaExtensions._
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.delta.serverSidePlanning.ServerSidePlanningClientFactory
 
 import org.apache.spark.SparkException
 import org.apache.spark.internal.{Logging, MDC}
@@ -229,7 +230,68 @@ class DeltaCatalog extends DelegatingCatalogExtension
   override def loadTable(ident: Identifier): Table = recordFrameProfile(
       "DeltaCatalog", "loadTable") {
     try {
-      super.loadTable(ident) match {
+      val table = super.loadTable(ident)
+
+      // Check if we should force server-side planning (for testing)
+      val forceServerSidePlanning =
+        spark.conf.get(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "false").toBoolean
+
+      // Check if this is a Unity Catalog table without credentials OR force flag is set
+      if ((isUnityCatalog && !hasCredentials(table)) || forceServerSidePlanning) {
+        // Fallback: Use server-side scan planning
+        val namespace = ident.namespace().mkString(".")
+        val tableName = ident.name()
+
+        if (forceServerSidePlanning) {
+          logInfo(log"Forcing server-side planning for table " +
+            log"${MDC(DeltaLogKeys.TABLE_NAME, ident)}")
+        } else {
+          logInfo(log"Unity Catalog table ${MDC(DeltaLogKeys.TABLE_NAME, ident)} " +
+            log"has no credentials. Using server-side planning fallback.")
+        }
+
+        // Extract catalog name from identifier namespace, or default to spark_catalog
+        //
+        // Spark Identifier structure:
+        // - For "catalog.database.table": namespace() = ["catalog", "database"], name() = "table"
+        // - For "database.table":          namespace() = ["database"], name() = "table"
+        // - For "table":                   namespace() = [], name() = "table"
+        //
+        // Note: We check namespace().length > 1 (not >= 1) because a single-element namespace
+        // represents just the database name without an explicit catalog, so we use the default.
+        // See Spark's LookupCatalog, CatalogAndIdentifier and ResolveSessionCatalog.
+        val catalogName = if (ident.namespace().length > 1) {
+          ident.namespace().head
+        } else {
+          "spark_catalog"
+        }
+
+        // Get client from factory using catalog-specific configuration
+        val client = try {
+          ServerSidePlanningClientFactory.buildForCatalog(spark, catalogName)
+        } catch {
+          case e: IllegalStateException =>
+            // Factory not registered - this shouldn't happen in production but could during testing
+            logWarning(s"Server-side planning factory not registered for catalog $catalogName. " +
+              "Falling back to normal table loading.", e)
+            // Fall through to normal path by returning early
+            return table match {
+              case v1: V1Table if DeltaTableUtils.isDeltaTable(v1.catalogTable) =>
+                DeltaTableV2(
+                  spark,
+                  new Path(v1.catalogTable.location),
+                  catalogTable = Some(v1.catalogTable),
+                  tableIdentifier = Some(ident.toString))
+              case o => o
+            }
+        }
+
+        // Return ServerSidePlannedTable instead of regular table
+        return new ServerSidePlannedTable(spark, namespace, tableName, table.schema(), client)
+      }
+
+      // Normal path: wrap Delta tables in DeltaTableV2
+      table match {
         case v1: V1Table if DeltaTableUtils.isDeltaTable(v1.catalogTable) =>
           DeltaTableV2(
             spark,
@@ -255,6 +317,35 @@ class DeltaCatalog extends DelegatingCatalogExtension
     }
   }
 
+  /**
+   * Property keys that indicate table credentials are available.
+   * Unity Catalog tables may expose temporary credentials via these properties.
+   */
+  private val CREDENTIAL_PROPERTY_KEYS = Seq(
+    "storage.credential",
+    "aws.temporary.credentials",
+    "azure.temporary.credentials",
+    "gcs.temporary.credentials",
+    "credential"
+  )
+
+  /**
+   * Check if a table has credentials available.
+   * Unity Catalog tables may lack credentials when accessed without proper permissions.
+   *
+   * Test coverage: ServerSidePlanningIntegrationSuite.loadTable() tests verify the decision
+   * logic including the Unity Catalog path (isUnityCatalog && !hasCredentials) using reflection.
+   */
+  private def hasCredentials(table: Table): Boolean = {
+    // Check table properties for credential information
+    val properties = table.properties()
+    CREDENTIAL_PROPERTY_KEYS.exists(key => properties.containsKey(key))
+  }
+
+  // Note: Server-side planning currently only supports reading the current snapshot.
+  // The ServerSidePlanningClient interface does not accept version/timestamp parameters,
+  // and implementations (e.g., IcebergRESTCatalogPlanningClient) always request the current
+  // snapshot.
   override def loadTable(ident: Identifier, timestamp: Long): Table = {
     loadTableWithTimeTravel(ident, version = None, Some(timestamp))
   }
