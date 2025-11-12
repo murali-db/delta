@@ -85,15 +85,16 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
   }
 
   // Tests that the REST /plan endpoint returns the correct number of files for a non-empty table.
-  // Creates a table, writes actual parquet files with data, then verifies the response includes them.
-  // Uses Jackson to parse JSON directly due to bug in shaded Iceberg deserializer.
+  // Creates a table, writes actual parquet files with data, then verifies the response includes
+  // them. Uses Jackson to parse JSON directly due to bug in shaded Iceberg deserializer.
   test("plan scan on non-empty table with data files") {
     withTempTable("tableWithData") { table =>
       // Add two data files with actual parquet data
       addDataFileToTable(table, s"${table.location()}/data/file1.parquet", recordCount = 100)
       addDataFileToTable(table, s"${table.location()}/data/file2.parquet", recordCount = 150)
 
-      val fileCount = countDataFilesInPlanResponse(defaultNamespace.toString, "tableWithData", table)
+      val fileCount = countDataFilesInPlanResponse(
+        defaultNamespace.toString, "tableWithData", table)
       assert(fileCount == 2, s"Expected 2 files but got $fileCount")
     }
   }
@@ -271,8 +272,10 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
 
     // Create unshaded schema matching the table schema for writing
     val unshadedSchema = new org.apache.iceberg.Schema(
-      org.apache.iceberg.types.Types.NestedField.required(1, "id", org.apache.iceberg.types.Types.LongType.get),
-      org.apache.iceberg.types.Types.NestedField.required(2, "name", org.apache.iceberg.types.Types.StringType.get)
+      org.apache.iceberg.types.Types.NestedField.required(
+        1, "id", org.apache.iceberg.types.Types.LongType.get),
+      org.apache.iceberg.types.Types.NestedField.required(
+        2, "name", org.apache.iceberg.types.Types.StringType.get)
     )
 
     // Create test records using unshaded types
