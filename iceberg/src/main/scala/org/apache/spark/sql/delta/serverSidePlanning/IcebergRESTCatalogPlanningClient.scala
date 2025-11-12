@@ -152,7 +152,6 @@ class IcebergRESTCatalogPlanningClient(
       // Validate that table is unpartitioned. Partitioned tables are not supported yet.
       if (file.partition().size() > 0) {
         throw new UnsupportedOperationException(
-          s"Partitioned tables are not supported yet. " +
           s"Table has partition data: ${file.partition()}. " +
           s"Only unpartitioned tables (spec ID $UNPARTITIONED_SPEC_ID) are currently supported.")
       }
