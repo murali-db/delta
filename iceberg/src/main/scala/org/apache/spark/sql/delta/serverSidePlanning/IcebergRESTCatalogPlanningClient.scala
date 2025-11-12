@@ -87,6 +87,7 @@ class IcebergRESTCatalogPlanningClient(
     val requestJson = PlanTableScanRequestParser.toJson(request)
     val httpPost = new HttpPost(planTableScanUri)
     httpPost.setEntity(new StringEntity(requestJson, ContentType.APPLICATION_JSON))
+    // TODO: Add retry logic for transient HTTP failures (e.g., connection timeouts, 5xx errors)
     val httpResponse = httpClient.execute(httpPost)
 
     // Only unpartitioned tables are supported. This map is used when parsing the response
