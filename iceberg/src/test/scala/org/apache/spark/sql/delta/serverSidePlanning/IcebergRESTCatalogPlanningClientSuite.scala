@@ -76,7 +76,7 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
   }
 
   // Tests that the REST /plan endpoint returns 0 files for an empty table.
-  // Uses direct HTTP call to sidestep deserialization issues while verifying core functionality.
+  // Uses Jackson to parse JSON directly due to bug in shaded Iceberg deserializer.
   test("basic plan table scan via IcebergRESTCatalogPlanningClient") {
     withTempTable("testTable") { table =>
       val fileCount = countDataFilesInPlanResponse(defaultNamespace.toString, "testTable", table)
@@ -86,7 +86,7 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
 
   // Tests that the REST /plan endpoint returns the correct number of files for a non-empty table.
   // Creates a table, writes actual parquet files with data, then verifies the response includes them.
-  // Uses direct HTTP call to sidestep deserialization issues while verifying core functionality.
+  // Uses Jackson to parse JSON directly due to bug in shaded Iceberg deserializer.
   test("plan scan on non-empty table with data files") {
     withTempTable("tableWithData") { table =>
       // Add two data files with actual parquet data
@@ -197,7 +197,8 @@ class IcebergRESTCatalogPlanningClientSuite extends AnyFunSuite with BeforeAndAf
 
   /**
    * Helper method to call the /plan REST endpoint and get the parsed JSON response.
-   * This sidesteps deserialization issues while allowing inspection of the response.
+   * Uses Jackson to parse JSON directly to work around a bug in the shaded Iceberg
+   * deserializer that crashes on empty delete-file-references arrays.
    */
   private def getPlanResponse(
       namespace: String,
