@@ -75,7 +75,8 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
         val scanPlan = client.planScan(defaultNamespace.toString, "testTable")
         assert(scanPlan != null, "Scan plan should not be null")
         assert(scanPlan.files != null, "Scan plan files should not be null")
-        assert(scanPlan.files.isEmpty, s"Empty table should have 0 files, got ${scanPlan.files.length}")
+        assert(scanPlan.files.isEmpty,
+          s"Empty table should have 0 files, got ${scanPlan.files.length}")
       } finally {
         client.close()
       }
@@ -83,7 +84,8 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
   }
 
   // Tests that the REST /plan endpoint returns the correct number of files for a non-empty table.
-  // Creates a table, writes actual parquet files with data, then verifies the response includes them.
+  // Creates a table, writes actual parquet files with data, then verifies the response includes
+  // them.
   test("plan scan on non-empty table with data files") {
     withTempTable("tableWithData") { table =>
       // Write data to the table using Spark
@@ -107,6 +109,13 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
         .mode("append")
         .save(tableName)
 
+      // Get the actual data files from the table metadata to verify against scan plan
+      val actualFiles = spark.sql(
+        s"SELECT file_path, file_size_in_bytes FROM ${tableName}.files")
+        .collect()
+        .map(row => (row.getString(0), row.getLong(1)))
+        .toMap
+
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
       try {
         val scanPlan = client.planScan(defaultNamespace.toString, "tableWithData")
@@ -114,10 +123,20 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
         assert(scanPlan.files != null, "Scan plan files should not be null")
         assert(scanPlan.files.length == 2, s"Expected 2 files but got ${scanPlan.files.length}")
 
-        // Verify the file paths end with .parquet
+        // Verify each file from the scan plan matches an actual data file
         scanPlan.files.foreach { file =>
-          assert(file.filePath.endsWith(".parquet"),
-            s"File path should end with .parquet: ${file.filePath}")
+          val matchingFile = actualFiles.find { case (path, _) =>
+            file.filePath.endsWith(path)
+          }
+          assert(matchingFile.isDefined,
+            s"File path ${file.filePath} should match one of the actual data files: " +
+              s"${actualFiles.keys.mkString(", ")}")
+
+          // Verify file size matches
+          val (_, expectedSize) = matchingFile.get
+          assert(file.fileSizeInBytes == expectedSize,
+            s"File size mismatch for ${file.filePath}: " +
+              s"expected $expectedSize but got ${file.fileSizeInBytes}")
         }
       } finally {
         client.close()
@@ -131,7 +150,8 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
   // 1. Creates a partitioned table with data files containing partition info
   // 2. Calls client.planScan() and expects UnsupportedOperationException
   // 3. Verifies exception message contains "partition data"
-  // This will test the client's partition validation logic at IcebergRESTCatalogPlanningClient:160-164
+  // This will test the client's partition validation logic at
+  // IcebergRESTCatalogPlanningClient:160-164
 
   private def startServer(): IcebergRESTServer = {
     val config = Map(IcebergRESTServer.REST_PORT -> "0").asJava
