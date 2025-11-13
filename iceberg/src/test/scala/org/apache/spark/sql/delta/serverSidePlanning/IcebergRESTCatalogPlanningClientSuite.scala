@@ -18,6 +18,7 @@ package org.apache.spark.sql.delta.serverSidePlanning
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.hadoop.fs.Path
 import org.apache.http.HttpHeaders
 import org.apache.http.client.methods.HttpGet
 import org.apache.http.entity.ContentType
@@ -31,6 +32,8 @@ import shadedForDelta.org.apache.iceberg.rest.IcebergRESTServer
 import shadedForDelta.org.apache.iceberg.types.Types
 
 class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSession {
+
+  import testImplicits._
 
   private val defaultNamespace = Namespace.of("testDatabase")
   private val defaultSchema = new Schema(
@@ -91,29 +94,20 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
       // Write data to the table using Spark
       val tableName = s"rest_catalog.${defaultNamespace}.tableWithData"
 
-      // Write first batch of data (coalesce to 1 file)
-      spark.range(100)
-        .selectExpr("id", "concat('test_', id) as name")
-        .coalesce(1)
-        .write
-        .format("iceberg")
-        .mode("append")
-        .save(tableName)
-
-      // Write second batch of data (coalesce to 1 file)
-      spark.range(100, 250)
-        .selectExpr("id", "concat('test_', id) as name")
-        .coalesce(1)
+      // Write data with 2 partitions to create 2 data files
+      spark.sparkContext.parallelize(0 until 250, numSlices = 2)
+        .map(id => (id.toLong, s"test_$id"))
+        .toDF("id", "name")
         .write
         .format("iceberg")
         .mode("append")
         .save(tableName)
 
       // Get the actual data files from the table metadata to verify against scan plan
-      val actualFiles = spark.sql(
+      val expectedFiles = spark.sql(
         s"SELECT file_path, file_size_in_bytes FROM ${tableName}.files")
         .collect()
-        .map(row => (row.getString(0), row.getLong(1)))
+        .map(row => (new Path(row.getString(0)).getName, row.getLong(1)))
         .toMap
 
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
@@ -123,21 +117,16 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
         assert(scanPlan.files != null, "Scan plan files should not be null")
         assert(scanPlan.files.length == 2, s"Expected 2 files but got ${scanPlan.files.length}")
 
-        // Verify each file from the scan plan matches an actual data file
-        scanPlan.files.foreach { file =>
-          val matchingFile = actualFiles.find { case (path, _) =>
-            file.filePath.endsWith(path)
-          }
-          assert(matchingFile.isDefined,
-            s"File path ${file.filePath} should match one of the actual data files: " +
-              s"${actualFiles.keys.mkString(", ")}")
+        // Get scanned files as map of filename -> size
+        val scannedFiles = scanPlan.files.map { file =>
+          (new Path(file.filePath).getName, file.fileSizeInBytes)
+        }.toMap
 
-          // Verify file size matches
-          val (_, expectedSize) = matchingFile.get
-          assert(file.fileSizeInBytes == expectedSize,
-            s"File size mismatch for ${file.filePath}: " +
-              s"expected $expectedSize but got ${file.fileSizeInBytes}")
-        }
+        // Verify scan plan files match expected files
+        assert(scannedFiles == expectedFiles,
+          s"Scan plan files don't match expected files.\n" +
+            s"Expected: $expectedFiles\n" +
+            s"Got: $scannedFiles")
       } finally {
         client.close()
       }
