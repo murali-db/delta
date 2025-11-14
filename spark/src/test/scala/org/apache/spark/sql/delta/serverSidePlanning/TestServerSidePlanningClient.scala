@@ -20,6 +20,7 @@ import java.util.Locale
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.functions.input_file_name
 
 /**
@@ -36,8 +37,8 @@ class TestServerSidePlanningClient(spark: SparkSession) extends ServerSidePlanni
 
     // Temporarily disable server-side planning to avoid infinite recursion
     // when this test client internally loads the table
-    val originalConfigValue = spark.conf.getOption("spark.databricks.delta.catalog.enableServerSidePlanning")
-    spark.conf.set("spark.databricks.delta.catalog.enableServerSidePlanning", "false")
+    val originalConfigValue = spark.conf.getOption(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+    spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "false")
 
     try {
       // Use input_file_name() to get the list of files
@@ -71,8 +72,8 @@ class TestServerSidePlanningClient(spark: SparkSession) extends ServerSidePlanni
     } finally {
       // Restore original config value
       originalConfigValue match {
-        case Some(value) => spark.conf.set("spark.databricks.delta.catalog.enableServerSidePlanning", value)
-        case None => spark.conf.unset("spark.databricks.delta.catalog.enableServerSidePlanning")
+        case Some(value) => spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, value)
+        case None => spark.conf.unset(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
       }
     }
   }

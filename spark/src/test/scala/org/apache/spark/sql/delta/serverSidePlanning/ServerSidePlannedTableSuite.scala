@@ -17,10 +17,30 @@
 package org.apache.spark.sql.delta.serverSidePlanning
 
 import org.apache.spark.sql.QueryTest
-import org.apache.spark.sql.delta.catalog.ServerSidePlannedTable
-import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 
-class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
+/**
+ * Unit tests for the ServerSidePlannedTable class implementation.
+ *
+ * This suite tests the Table class itself IN ISOLATION, not the orchestration flow.
+ *
+ * **What this suite tests**:
+ * - ServerSidePlannedTable behavior as a Spark Table
+ * - Table interface methods (schema, name, capabilities)
+ * - Scan building and query execution
+ * - Reading files returned by the planning client
+ *
+ * **Test setup**:
+ * - Direct construction via `ServerSidePlannedTable.forTesting()`
+ * - Uses TestServerSidePlanningClient (mock)
+ * - Does NOT go through DeltaCatalog
+ * - Tests the Table implementation details
+ *
+ * **Distinction from ServerSidePlanningSuite**:
+ * - This suite: Tests the Table class IMPLEMENTATION in isolation
+ * - ServerSidePlanningSuite: Tests the FLOW/orchestration through DeltaCatalog
+ */
+class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
 
   test("end-to-end: ServerSidePlannedTable with test client") {
     withTable("test_table") {
@@ -65,12 +85,12 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         val tableSchema = spark.table("test_table").schema
 
         // Create ServerSidePlannedTable using schema from the table
-        val table = new ServerSidePlannedTable(
+        val table = ServerSidePlannedTable.forTesting(
           spark = spark,
           database = "default",
           tableName = "test_table",
           tableSchema = tableSchema,
-          planningClient = client
+          client = client
         )
 
         // Verify table metadata
@@ -102,6 +122,46 @@ class ServerSidePlannedTableSuite extends QueryTest with SharedSparkSession {
         // Clean up factory
         ServerSidePlanningClientFactory.clearFactory()
       }
+    }
+  }
+
+  test("ServerSidePlannedTable is read-only and does not support writes") {
+    withTable("readonly_test") {
+      // Create a Parquet table with data
+      sql("""
+        CREATE TABLE readonly_test (
+          id INT,
+          data STRING
+        ) USING parquet
+      """)
+
+      sql("INSERT INTO readonly_test VALUES (1, 'test')")
+
+      // Create ServerSidePlannedTable
+      val tableSchema = spark.table("readonly_test").schema
+      val client = new TestServerSidePlanningClient(spark)
+      val table = ServerSidePlannedTable.forTesting(
+        spark = spark,
+        database = "default",
+        tableName = "readonly_test",
+        tableSchema = tableSchema,
+        client = client
+      )
+
+      // Verify table only supports BATCH_READ capability
+      val capabilities = table.capabilities()
+      assert(capabilities.size() == 1,
+        "ServerSidePlannedTable should have exactly one capability")
+      assert(capabilities.contains(
+        org.apache.spark.sql.connector.catalog.TableCapability.BATCH_READ),
+        "ServerSidePlannedTable should support BATCH_READ")
+      assert(!capabilities.contains(
+        org.apache.spark.sql.connector.catalog.TableCapability.BATCH_WRITE),
+        "ServerSidePlannedTable should NOT support BATCH_WRITE")
+
+      // Verify table does not implement SupportsWrite
+      assert(!table.isInstanceOf[org.apache.spark.sql.connector.catalog.SupportsWrite],
+        "ServerSidePlannedTable should not implement SupportsWrite")
     }
   }
 }
