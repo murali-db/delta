@@ -40,10 +40,7 @@ case class ScanPlan(
  * This interface is intentionally simple and has no dependencies
  * on Iceberg libraries, allowing it to live in delta-spark module.
  *
- * Current limitation: Server-side planning only supports reading the current snapshot.
- * The interface does not accept version/timestamp parameters, and implementations
- * (e.g., IcebergRESTCatalogPlanningClient) always request the current snapshot.
- * Time travel queries will bypass server-side planning and use the normal Delta path.
+ * Note: Server-side planning only supports reading the current snapshot.
  */
 trait ServerSidePlanningClient {
   /**
