@@ -68,13 +68,8 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
         val tableSchema = spark.table("test_table").schema
 
         // Create ServerSidePlannedTable using schema from the table
-        val table = ServerSidePlannedTable.forTesting(
-          spark = spark,
-          database = "default",
-          tableName = "test_table",
-          tableSchema = tableSchema,
-          client = client
-        )
+        val table = new ServerSidePlannedTable(
+          spark, "default", "test_table", tableSchema, client)
 
         // Verify table metadata
         assert(table.name() == "default.test_table",
@@ -123,13 +118,8 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       // Create ServerSidePlannedTable
       val tableSchema = spark.table("readonly_test").schema
       val client = new TestServerSidePlanningClient(spark)
-      val table = ServerSidePlannedTable.forTesting(
-        spark = spark,
-        database = "default",
-        tableName = "readonly_test",
-        tableSchema = tableSchema,
-        client = client
-      )
+      val table = new ServerSidePlannedTable(
+        spark, "default", "readonly_test", tableSchema, client)
 
       // Verify table only supports BATCH_READ capability
       val capabilities = table.capabilities()

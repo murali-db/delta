@@ -138,25 +138,6 @@ object ServerSidePlannedTable extends DeltaLogging {
   }
 
   /**
-   * Create a ServerSidePlannedTable with an explicit client for testing.
-   *
-   * @param spark The SparkSession
-   * @param database The database name (may include catalog prefix)
-   * @param tableName The table name
-   * @param tableSchema The table schema
-   * @param client The planning client to use
-   * @return ServerSidePlannedTable instance
-   */
-  def forTesting(
-      spark: SparkSession,
-      database: String,
-      tableName: String,
-      tableSchema: StructType,
-      client: ServerSidePlanningClient): ServerSidePlannedTable = {
-    new ServerSidePlannedTable(spark, database, tableName, tableSchema, client)
-  }
-
-  /**
    * Check if a table has credentials available.
    * Unity Catalog tables may lack credentials when accessed without proper permissions.
    */
