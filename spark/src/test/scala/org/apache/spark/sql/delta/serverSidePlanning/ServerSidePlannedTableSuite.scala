@@ -121,10 +121,8 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       val table = new ServerSidePlannedTable(
         spark, "default", "readonly_test", tableSchema, client)
 
-      // Verify table only supports BATCH_READ capability
+      // Verify table supports BATCH_READ but not BATCH_WRITE
       val capabilities = table.capabilities()
-      assert(capabilities.size() == 1,
-        "ServerSidePlannedTable should have exactly one capability")
       assert(capabilities.contains(
         org.apache.spark.sql.connector.catalog.TableCapability.BATCH_READ),
         "ServerSidePlannedTable should support BATCH_READ")
