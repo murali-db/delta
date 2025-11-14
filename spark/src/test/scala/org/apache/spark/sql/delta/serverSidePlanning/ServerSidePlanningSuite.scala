@@ -37,12 +37,12 @@ class ServerSidePlanningSuite extends QueryTest with DeltaSQLCommandTest {
     }
   }
 
-  test("E2E: Full stack integration with DeltaCatalog") {
-    withTable("integration_db.e2e_test") {
+  test("Full query through DeltaCatalog with server-side planning") {
+    withTable("test_db.planning_test") {
         // Create test database and table
-        sql("CREATE DATABASE IF NOT EXISTS integration_db")
+        sql("CREATE DATABASE IF NOT EXISTS test_db")
         sql("""
-          CREATE TABLE integration_db.e2e_test (
+          CREATE TABLE test_db.planning_test (
             id INT,
             name STRING,
             value INT
@@ -51,7 +51,7 @@ class ServerSidePlanningSuite extends QueryTest with DeltaSQLCommandTest {
 
         // Insert test data
         sql("""
-          INSERT INTO integration_db.e2e_test (id, name, value) VALUES
+          INSERT INTO test_db.planning_test (id, name, value) VALUES
           (1, 'alpha', 10),
           (2, 'beta', 20),
           (3, 'gamma', 30)
@@ -66,13 +66,13 @@ class ServerSidePlanningSuite extends QueryTest with DeltaSQLCommandTest {
           .asInstanceOf[org.apache.spark.sql.connector.catalog.TableCatalog]
         val loadedTable = catalog.loadTable(
           org.apache.spark.sql.connector.catalog.Identifier.of(
-            Array("integration_db"), "e2e_test"))
+            Array("test_db"), "planning_test"))
         assert(loadedTable.isInstanceOf[ServerSidePlannedTable],
           s"Expected ServerSidePlannedTable but got ${loadedTable.getClass.getName}")
 
         // Execute query - should go through full server-side planning stack
         checkAnswer(
-          sql("SELECT id, name, value FROM integration_db.e2e_test ORDER BY id"),
+          sql("SELECT id, name, value FROM test_db.planning_test ORDER BY id"),
           Seq(
             Row(1, "alpha", 10),
             Row(2, "beta", 20),
@@ -82,24 +82,24 @@ class ServerSidePlanningSuite extends QueryTest with DeltaSQLCommandTest {
 
         // Verify the plan used server-side planning
         val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
-        val scanPlan = client.planScan("integration_db", "e2e_test")
+        val scanPlan = client.planScan("test_db", "planning_test")
         assert(scanPlan.files.nonEmpty, "Should have discovered files via server-side planning")
         assert(scanPlan.files.forall(_.fileFormat == "parquet"),
           "Delta tables use Parquet format for data files")
       }
   }
 
-  test("E2E: Verify normal path unchanged when feature disabled") {
-    withTable("integration_db.normal_test") {
-        sql("CREATE DATABASE IF NOT EXISTS integration_db")
+  test("Verify normal path unchanged when feature disabled") {
+    withTable("test_db.normal_test") {
+        sql("CREATE DATABASE IF NOT EXISTS test_db")
         sql("""
-          CREATE TABLE integration_db.normal_test (
+          CREATE TABLE test_db.normal_test (
             id INT,
             data STRING
           ) USING parquet
         """)
 
-        sql("INSERT INTO integration_db.normal_test (id, data) VALUES (1, 'test')")
+        sql("INSERT INTO test_db.normal_test (id, data) VALUES (1, 'test')")
 
         // Do NOT enable server-side planning
         // Verify that DeltaCatalog returns normal table, not ServerSidePlannedTable
@@ -107,7 +107,7 @@ class ServerSidePlanningSuite extends QueryTest with DeltaSQLCommandTest {
           .asInstanceOf[org.apache.spark.sql.connector.catalog.TableCatalog]
         val loadedTable = catalog.loadTable(
           org.apache.spark.sql.connector.catalog.Identifier.of(
-            Array("integration_db"), "normal_test"))
+            Array("test_db"), "normal_test"))
         assert(!loadedTable.isInstanceOf[ServerSidePlannedTable],
           s"Expected normal table but got ServerSidePlannedTable when config is disabled")
       }
