@@ -20,25 +20,8 @@ import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 
 /**
- * Unit tests for the ServerSidePlannedTable class implementation.
- *
- * This suite tests the Table class itself IN ISOLATION, not the orchestration flow.
- *
- * **What this suite tests**:
- * - ServerSidePlannedTable behavior as a Spark Table
- * - Table interface methods (schema, name, capabilities)
- * - Scan building and query execution
- * - Reading files returned by the planning client
- *
- * **Test setup**:
- * - Direct construction via `ServerSidePlannedTable.forTesting()`
- * - Uses TestServerSidePlanningClient (mock)
- * - Does NOT go through DeltaCatalog
- * - Tests the Table implementation details
- *
- * **Distinction from ServerSidePlanningSuite**:
- * - This suite: Tests the Table class IMPLEMENTATION in isolation
- * - ServerSidePlanningSuite: Tests the FLOW/orchestration through DeltaCatalog
+ * Tests ServerSidePlannedTable in isolation using a mock client.
+ * ServerSidePlanningSuite tests the full integration through DeltaCatalog.
  */
 class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
 

@@ -22,27 +22,8 @@ import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 
 /**
- * Tests for server-side planning flow and orchestration through DeltaCatalog.
- *
- * This suite tests the server-side planning FLOW, not the Table implementation itself.
- *
- * **What this suite tests**:
- * - DeltaCatalog.loadTable() decision logic (credential checking, force flag)
- * - ServerSidePlannedTable.tryCreate() factory pattern
- * - End-to-end query execution through the planning flow
- * - Configuration handling and fallback behavior
- *
- * **Test setup**:
- * - Goes through DeltaCatalog (mimics real usage)
- * - Uses TestServerSidePlanningClient (mock, not real REST calls)
- * - Tests catalog-level orchestration
- *
- * **Distinction from ServerSidePlannedTableSuite**:
- * - This suite: Tests the FLOW/orchestration through DeltaCatalog
- * - ServerSidePlannedTableSuite: Tests the Table class implementation in isolation
- *
- * Note: Despite the name, this is not true "integration" testing (uses mocks, not external systems).
- * It tests integration between Delta components, not external system integration.
+ * Tests the server-side planning flow through DeltaCatalog with a mock client.
+ * ServerSidePlannedTableSuite tests the Table implementation in isolation.
  */
 class ServerSidePlanningSuite extends QueryTest with DeltaSQLCommandTest {
 
