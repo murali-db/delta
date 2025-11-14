@@ -16,96 +16,170 @@
 
 package org.apache.spark.sql.delta.serverSidePlanning
 
-import org.apache.spark.sql.QueryTest
+import org.apache.spark.sql.{QueryTest, Row}
+import org.apache.spark.sql.delta.catalog.DeltaCatalog
+import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 
 /**
- * Tests ServerSidePlannedTable in isolation using a mock client.
- * ServerSidePlanningSuite tests the full integration through DeltaCatalog.
+ * Tests for server-side planning with a mock client.
  */
 class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
 
-  test("end-to-end: ServerSidePlannedTable with test client") {
-    withTable("test_table") {
-      // Create a Parquet table with data
-      sql("""
-        CREATE TABLE test_table (
-          id INT,
-          name STRING,
-          category STRING
-        ) USING parquet
-      """)
-
-      sql("""
-        INSERT INTO test_table (id, name, category) VALUES
-        (1, 'Alice', 'A'),
-        (2, 'Bob', 'B'),
-        (3, 'Charlie', 'A'),
-        (4, 'David', 'B')
-      """)
-
-      // Configure factory to use test client
-      val testFactory = new TestServerSidePlanningClientFactory()
-      ServerSidePlanningClientFactory.setFactory(testFactory)
-      assert(ServerSidePlanningClientFactory.getFactory() == testFactory,
-        "Factory should be set to test factory")
-
-      try {
-        // Create client and verify it's the test client
-        val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
-        assert(client.isInstanceOf[TestServerSidePlanningClient],
-          "Client should be TestServerSidePlanningClient")
-
-        // Get scan plan and verify file discovery
-        val scanPlan = client.planScan("default", "test_table")
-        assert(scanPlan.files.nonEmpty, "Should discover data files")
-        assert(scanPlan.files.forall(_.fileFormat == "parquet"),
-          "Parquet tables should have parquet file format")
-        assert(scanPlan.files.forall(_.fileSizeInBytes > 0),
-          "All files should have positive size")
-
-        // Get the table schema from the actual table
-        val tableSchema = spark.table("test_table").schema
-
-        // Create ServerSidePlannedTable using schema from the table
-        val table = new ServerSidePlannedTable(
-          spark, "default", "test_table", tableSchema, client)
-
-        // Verify table metadata
-        assert(table.name() == "default.test_table",
-          "Table name should be fully qualified")
-        assert(table.schema() == tableSchema,
-          "Table schema should match")
-
-        // Verify scan produces correct number of partitions
-        val scan = table.newScanBuilder(
-          new org.apache.spark.sql.util.CaseInsensitiveStringMap(
-            java.util.Collections.emptyMap()
-          )
-        ).build()
-
-        val partitions = scan.toBatch.planInputPartitions()
-        assert(partitions.length == scanPlan.files.length,
-          s"Should have ${scanPlan.files.length} partitions, one per file")
-
-        // Verify reader factory can be created
-        val readerFactory = scan.toBatch.createReaderFactory()
-        assert(readerFactory != null, "Reader factory should be created")
-
-        // Verify we can create a reader for the first partition
-        val reader = readerFactory.createReader(partitions(0))
-        assert(reader != null, "Reader should be created for partition")
-
-      } finally {
-        // Clean up factory
-        ServerSidePlanningClientFactory.clearFactory()
-      }
+  override def afterEach(): Unit = {
+    try {
+      // Clean up factory and config after each test to prevent interference
+      spark.conf.unset(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+      ServerSidePlanningClientFactory.clearFactory()
+    } finally {
+      super.afterEach()
     }
   }
 
-  test("ServerSidePlannedTable is read-only and does not support writes") {
+  test("Full query through DeltaCatalog with server-side planning") {
+    withTable("test_db.planning_test") {
+        // Create test database and table
+        sql("CREATE DATABASE IF NOT EXISTS test_db")
+        sql("""
+          CREATE TABLE test_db.planning_test (
+            id INT,
+            name STRING,
+            value INT
+          ) USING parquet
+        """)
+
+        // Insert test data
+        sql("""
+          INSERT INTO test_db.planning_test (id, name, value) VALUES
+          (1, 'alpha', 10),
+          (2, 'beta', 20),
+          (3, 'gamma', 30)
+        """)
+
+        // Enable server-side planning via test client
+        ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
+        spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "true")
+
+        // Verify that DeltaCatalog actually returns ServerSidePlannedTable
+        val catalog = spark.sessionState.catalogManager.catalog("spark_catalog")
+          .asInstanceOf[org.apache.spark.sql.connector.catalog.TableCatalog]
+        val loadedTable = catalog.loadTable(
+          org.apache.spark.sql.connector.catalog.Identifier.of(
+            Array("test_db"), "planning_test"))
+        assert(loadedTable.isInstanceOf[ServerSidePlannedTable],
+          s"Expected ServerSidePlannedTable but got ${loadedTable.getClass.getName}")
+
+        // Execute query - should go through full server-side planning stack
+        checkAnswer(
+          sql("SELECT id, name, value FROM test_db.planning_test ORDER BY id"),
+          Seq(
+            Row(1, "alpha", 10),
+            Row(2, "beta", 20),
+            Row(3, "gamma", 30)
+          )
+        )
+
+        // Verify the plan used server-side planning
+        val client = ServerSidePlanningClientFactory.buildForCatalog(spark, "spark_catalog")
+        val scanPlan = client.planScan("test_db", "planning_test")
+        assert(scanPlan.files.nonEmpty, "Should have discovered files via server-side planning")
+        assert(scanPlan.files.forall(_.fileFormat == "parquet"),
+          "Delta tables use Parquet format for data files")
+      }
+  }
+
+  test("Verify normal path unchanged when feature disabled") {
+    withTable("test_db.normal_test") {
+        sql("CREATE DATABASE IF NOT EXISTS test_db")
+        sql("""
+          CREATE TABLE test_db.normal_test (
+            id INT,
+            data STRING
+          ) USING parquet
+        """)
+
+        sql("INSERT INTO test_db.normal_test (id, data) VALUES (1, 'test')")
+
+        // Do NOT enable server-side planning
+        // Verify that DeltaCatalog returns normal table, not ServerSidePlannedTable
+        val catalog = spark.sessionState.catalogManager.catalog("spark_catalog")
+          .asInstanceOf[org.apache.spark.sql.connector.catalog.TableCatalog]
+        val loadedTable = catalog.loadTable(
+          org.apache.spark.sql.connector.catalog.Identifier.of(
+            Array("test_db"), "normal_test"))
+        assert(!loadedTable.isInstanceOf[ServerSidePlannedTable],
+          s"Expected normal table but got ServerSidePlannedTable when config is disabled")
+      }
+  }
+
+  test("loadTable() decision logic with ENABLE_SERVER_SIDE_PLANNING config") {
+    withTable("test_db.decision_test") {
+        sql("CREATE DATABASE IF NOT EXISTS test_db")
+        sql("CREATE TABLE test_db.decision_test (id INT) USING parquet")
+        sql("INSERT INTO test_db.decision_test VALUES (1)")
+
+        ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
+
+        val catalog = spark.sessionState.catalogManager.catalog("spark_catalog")
+          .asInstanceOf[org.apache.spark.sql.connector.catalog.TableCatalog]
+          .asInstanceOf[DeltaCatalog]
+
+        // Case 1: Config enabled (force server-side planning)
+        spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "true")
+        val table1 = catalog.loadTable(
+          org.apache.spark.sql.connector.catalog.Identifier.of(
+            Array("test_db"), "decision_test"))
+        assert(table1.isInstanceOf[ServerSidePlannedTable],
+          "Expected ServerSidePlannedTable when config is enabled")
+
+        // Case 2: Config disabled, normal path
+        spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "false")
+        val table2 = catalog.loadTable(
+          org.apache.spark.sql.connector.catalog.Identifier.of(
+            Array("test_db"), "decision_test"))
+        assert(!table2.isInstanceOf[ServerSidePlannedTable],
+          "Expected normal table when config is disabled")
+      }
+  }
+
+  test("shouldUseServerSidePlanning() decision logic") {
+    // Case 1: Force flag enabled -> should always use server-side planning
+    assert(ServerSidePlannedTable.shouldUseServerSidePlanning(
+      isUnityCatalog = false,
+      hasCredentials = true,
+      forceServerSidePlanning = true),
+      "Should use server-side planning when force flag is true")
+
+    // Case 2: Unity Catalog without credentials -> should use server-side planning
+    assert(ServerSidePlannedTable.shouldUseServerSidePlanning(
+      isUnityCatalog = true,
+      hasCredentials = false,
+      forceServerSidePlanning = false),
+      "Should use server-side planning for UC table without credentials")
+
+    // Case 3: Unity Catalog with credentials -> should NOT use server-side planning
+    assert(!ServerSidePlannedTable.shouldUseServerSidePlanning(
+      isUnityCatalog = true,
+      hasCredentials = true,
+      forceServerSidePlanning = false),
+      "Should NOT use server-side planning for UC table with credentials")
+
+    // Case 4: Non-UC catalog -> should NOT use server-side planning
+    assert(!ServerSidePlannedTable.shouldUseServerSidePlanning(
+      isUnityCatalog = false,
+      hasCredentials = true,
+      forceServerSidePlanning = false),
+      "Should NOT use server-side planning for non-UC catalog")
+
+    assert(!ServerSidePlannedTable.shouldUseServerSidePlanning(
+      isUnityCatalog = false,
+      hasCredentials = false,
+      forceServerSidePlanning = false),
+      "Should NOT use server-side planning for non-UC catalog (even without credentials)")
+  }
+
+  test("ServerSidePlannedTable is read-only") {
     withTable("readonly_test") {
-      // Create a Parquet table with data
       sql("""
         CREATE TABLE readonly_test (
           id INT,
@@ -115,7 +189,7 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
 
       sql("INSERT INTO readonly_test VALUES (1, 'test')")
 
-      // Create ServerSidePlannedTable
+      // Create ServerSidePlannedTable directly
       val tableSchema = spark.table("readonly_test").schema
       val client = new TestServerSidePlanningClient(spark)
       val table = new ServerSidePlannedTable(
