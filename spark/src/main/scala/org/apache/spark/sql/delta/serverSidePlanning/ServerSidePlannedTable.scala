@@ -121,10 +121,15 @@ object ServerSidePlannedTable extends DeltaLogging {
         "spark_catalog"
       }
 
+      // UC URI and token are used for credential refresh on executors
+      val ucUri = spark.conf.get(s"spark.sql.catalog.$catalogName.uri", "")
+      val ucToken = spark.conf.get(s"spark.sql.catalog.$catalogName.token", "")
+
       // Try to create ServerSidePlannedTable with server-side planning
       try {
         val client = ServerSidePlanningClientFactory.buildForCatalog(spark, catalogName)
-        Some(new ServerSidePlannedTable(spark, namespace, tableName, table.schema(), client))
+        Some(new ServerSidePlannedTable(
+          spark, namespace, tableName, table.schema(), client, catalogName, ucUri, ucToken))
       } catch {
         case _: IllegalStateException =>
           // Factory not registered - fall through to normal path
@@ -158,13 +163,20 @@ object ServerSidePlannedTable extends DeltaLogging {
  *
  * Similar to DeltaTableV2, we accept SparkSession as a constructor parameter
  * since Tables are created on the driver and are not serialized to executors.
+ *
+ * @param catalogName Catalog name for catalog-specific configuration keys
+ * @param ucUri Unity Catalog URI for credential refresh (passed to executors via Hadoop config)
+ * @param ucToken Unity Catalog token for credential refresh (passed to executors via Hadoop config)
  */
 class ServerSidePlannedTable(
     spark: SparkSession,
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient)
+    planningClient: ServerSidePlanningClient,
+    catalogName: String,
+    ucUri: String,
+    ucToken: String)
     extends Table with SupportsRead with DeltaLogging {
 
   // Returns fully qualified name (e.g., "catalog.database.table").
@@ -179,7 +191,8 @@ class ServerSidePlannedTable(
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
-    new ServerSidePlannedScanBuilder(spark, database, tableName, tableSchema, planningClient)
+    new ServerSidePlannedScanBuilder(
+      spark, database, tableName, tableSchema, planningClient, catalogName, ucUri, ucToken)
   }
 }
 
@@ -191,10 +204,14 @@ class ServerSidePlannedScanBuilder(
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient) extends ScanBuilder {
+    planningClient: ServerSidePlanningClient,
+    catalogName: String,
+    ucUri: String,
+    ucToken: String) extends ScanBuilder {
 
   override def build(): Scan = {
-    new ServerSidePlannedScan(spark, database, tableName, tableSchema, planningClient)
+    new ServerSidePlannedScan(
+      spark, database, tableName, tableSchema, planningClient, catalogName, ucUri, ucToken)
   }
 }
 
@@ -206,16 +223,19 @@ class ServerSidePlannedScan(
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient) extends Scan with Batch {
+    planningClient: ServerSidePlanningClient,
+    catalogName: String,
+    ucUri: String,
+    ucToken: String) extends Scan with Batch {
 
   override def readSchema(): StructType = tableSchema
 
   override def toBatch: Batch = this
 
-  override def planInputPartitions(): Array[InputPartition] = {
-    // Call the server-side planning API to get the scan plan
-    val scanPlan = planningClient.planScan(database, tableName)
+  // Call the server-side planning API once and store the result
+  private val scanPlan = planningClient.planScan(database, tableName)
 
+  override def planInputPartitions(): Array[InputPartition] = {
     // Convert each file to an InputPartition
     scanPlan.files.map { file =>
       ServerSidePlannedFileInputPartition(file.filePath, file.fileSizeInBytes, file.fileFormat)
@@ -223,7 +243,8 @@ class ServerSidePlannedScan(
   }
 
   override def createReaderFactory(): PartitionReaderFactory = {
-    new ServerSidePlannedFilePartitionReaderFactory(spark, tableSchema)
+    new ServerSidePlannedFilePartitionReaderFactory(
+      spark, tableSchema, scanPlan.credentials, catalogName, ucUri, ucToken)
   }
 }
 
@@ -238,10 +259,21 @@ case class ServerSidePlannedFileInputPartition(
 /**
  * Factory for creating PartitionReaders that read server-side planned files.
  * Builds reader functions on the driver for Parquet files.
+ *
+ * @param credentials Optional storage credentials from server-side planning response.
+ *                    When present, these credentials are injected into the Hadoop configuration
+ *                    for S3A file access.
+ * @param catalogName Catalog name for catalog-specific configuration keys
+ * @param ucUri Unity Catalog URI - injected into Hadoop config for credential refresh
+ * @param ucToken Unity Catalog token - injected into Hadoop config for credential refresh
  */
 class ServerSidePlannedFilePartitionReaderFactory(
     spark: SparkSession,
-    schema: StructType)
+    schema: StructType,
+    credentials: Option[StorageCredentials],
+    catalogName: String,
+    ucUri: String,
+    ucToken: String)
     extends PartitionReaderFactory {
 
   import org.apache.spark.util.SerializableConfiguration
@@ -252,7 +284,29 @@ class ServerSidePlannedFilePartitionReaderFactory(
   // included in the Hadoop configuration. This would fail if users specify credentials in
   // DataFrame read options expecting them to be used when accessing the underlying files.
   // However, for now we accept this limitation to avoid requiring a DeltaLog parameter.
-  private val hadoopConf = new SerializableConfiguration(spark.sessionState.newHadoopConf())
+  private val hadoopConf = {
+    val conf = spark.sessionState.newHadoopConf()
+
+    // Inject temporary credentials from server-side planning response if present
+    credentials.foreach { creds =>
+      conf.set("fs.s3a.access.key", creds.accessKeyId)
+      conf.set("fs.s3a.secret.key", creds.secretAccessKey)
+      conf.set("fs.s3a.session.token", creds.sessionToken)
+    }
+
+    // Inject Unity Catalog URI and token for potential credential refresh on executors
+    // Use catalog-specific configuration keys to support multiple catalogs
+    if (ucUri.nonEmpty) {
+      conf.set(s"spark.sql.catalog.$catalogName.uri", ucUri)
+    }
+    if (ucToken.nonEmpty) {
+      conf.set(s"spark.sql.catalog.$catalogName.token", ucToken)
+    }
+
+    // After serialization, executors will have access to these credentials for S3 file reads
+
+    new SerializableConfiguration(conf)
+  }
   // scalastyle:on deltahadoopconfiguration
 
   // Pre-build reader function for Parquet on the driver

@@ -173,7 +173,7 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       val tableSchema = spark.table("readonly_test").schema
       val client = new TestServerSidePlanningClient(spark)
       val table = new ServerSidePlannedTable(
-        spark, "default", "readonly_test", tableSchema, client)
+        spark, "default", "readonly_test", tableSchema, client, "spark_catalog", "", "")
 
       // Verify table supports read but not write
       val capabilities = table.capabilities()
