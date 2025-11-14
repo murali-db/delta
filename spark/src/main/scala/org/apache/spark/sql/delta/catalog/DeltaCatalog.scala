@@ -231,18 +231,20 @@ class DeltaCatalog extends DelegatingCatalogExtension
     try {
       val table = super.loadTable(ident)
 
-      // Try server-side planning first, then fall back to normal path
-      ServerSidePlannedTable.tryCreate(spark, ident, table, isUnityCatalog).getOrElse {
-        // Normal path: wrap Delta tables in DeltaTableV2
-        table match {
-          case v1: V1Table if DeltaTableUtils.isDeltaTable(v1.catalogTable) =>
-            DeltaTableV2(
-              spark,
-              new Path(v1.catalogTable.location),
-              catalogTable = Some(v1.catalogTable),
-              tableIdentifier = Some(ident.toString))
-          case o => o
-        }
+      // oss-only-start
+      ServerSidePlannedTable.tryCreate(spark, ident, table, isUnityCatalog).foreach { sspt =>
+        return sspt
+      }
+      // oss-only-end
+
+      table match {
+        case v1: V1Table if DeltaTableUtils.isDeltaTable(v1.catalogTable) =>
+          DeltaTableV2(
+            spark,
+            new Path(v1.catalogTable.location),
+            catalogTable = Some(v1.catalogTable),
+            tableIdentifier = Some(ident.toString))
+        case o => o
       }
     } catch {
       case e @ (
@@ -261,10 +263,6 @@ class DeltaCatalog extends DelegatingCatalogExtension
     }
   }
 
-  // Note: Server-side planning currently only supports reading the current snapshot.
-  // The ServerSidePlanningClient interface does not accept version/timestamp parameters,
-  // and implementations (e.g., IcebergRESTCatalogPlanningClient) always request the current
-  // snapshot.
   override def loadTable(ident: Identifier, timestamp: Long): Table = {
     loadTableWithTimeTravel(ident, version = None, Some(timestamp))
   }
