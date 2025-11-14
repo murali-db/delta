@@ -174,11 +174,6 @@ object ServerSidePlannedTable extends DeltaLogging {
  *
  * Similar to DeltaTableV2, we accept SparkSession as a constructor parameter
  * since Tables are created on the driver and are not serialized to executors.
- *
- * Resource Management: This class implements AutoCloseable to allow proper cleanup of the
- * underlying planning client (which may hold HTTP connections). However, Spark's Table
- * interface has no lifecycle hooks, so close() will not be called automatically by Spark.
- * The HTTP client relies on connection timeouts and finalization for cleanup in practice.
  */
 class ServerSidePlannedTable(
     spark: SparkSession,
@@ -186,7 +181,7 @@ class ServerSidePlannedTable(
     tableName: String,
     tableSchema: StructType,
     planningClient: ServerSidePlanningClient)
-    extends Table with SupportsRead with AutoCloseable with DeltaLogging {
+    extends Table with SupportsRead with DeltaLogging {
 
   // Returns fully qualified name (e.g., "catalog.database.table").
   // The database parameter receives ident.namespace().mkString(".") from DeltaCatalog,
@@ -201,28 +196,6 @@ class ServerSidePlannedTable(
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
     new ServerSidePlannedScanBuilder(spark, database, tableName, tableSchema, planningClient)
-  }
-
-  /**
-   * Close the underlying planning client if it implements AutoCloseable.
-   *
-   * Note: Spark's Table interface has no lifecycle hooks, so this method will not be called
-   * automatically by Spark. It is provided for explicit cleanup when possible, but in practice
-   * the HTTP client relies on connection timeouts for resource cleanup.
-   */
-  override def close(): Unit = {
-    planningClient match {
-      case closeable: AutoCloseable =>
-        try {
-          closeable.close()
-        } catch {
-          case e: Exception =>
-            // Log but don't fail - cleanup is best-effort
-            logWarning(s"Failed to close planning client for table $name()", e)
-        }
-      case _ =>
-        // Client doesn't implement AutoCloseable, nothing to do
-    }
   }
 }
 
