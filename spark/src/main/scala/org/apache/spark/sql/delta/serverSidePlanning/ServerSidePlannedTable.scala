@@ -126,10 +126,12 @@ object ServerSidePlannedTable extends DeltaLogging {
       val ucToken = spark.conf.get(s"spark.sql.catalog.$catalogName.token", "")
 
       // Try to create ServerSidePlannedTable with server-side planning
-      create(spark, namespace, tableName, table.schema(), catalogName, ucUri, ucToken) match {
-        case Some(plannedTable) =>
-          Some(plannedTable)
-        case None =>
+      try {
+        val client = ServerSidePlanningClientFactory.buildForCatalog(spark, catalogName)
+        Some(new ServerSidePlannedTable(
+          spark, namespace, tableName, table.schema(), client, catalogName, ucUri, ucToken))
+      } catch {
+        case _: IllegalStateException =>
           // Factory not registered - fall through to normal path
           logWarning(s"Server-side planning not available for catalog $catalogName. " +
             "Falling back to normal table loading.")
@@ -138,64 +140,6 @@ object ServerSidePlannedTable extends DeltaLogging {
     } else {
       None
     }
-  }
-
-  /**
-   * Try to create a ServerSidePlannedTable with server-side planning.
-   * Returns None if the planning client factory is not available.
-   *
-   * @param spark The SparkSession
-   * @param database The database name (may include catalog prefix)
-   * @param tableName The table name
-   * @param tableSchema The table schema
-   * @param catalogName The catalog name for configuration lookup
-   * @param ucUri Unity Catalog URI for credential refresh (passed to executors via Hadoop config)
-   * @param ucToken Unity Catalog token for credential refresh (passed to executors via Hadoop config)
-   * @return Some(ServerSidePlannedTable) if successful, None if factory not registered
-   */
-  private def create(
-      spark: SparkSession,
-      database: String,
-      tableName: String,
-      tableSchema: StructType,
-      catalogName: String,
-      ucUri: String,
-      ucToken: String): Option[ServerSidePlannedTable] = {
-    try {
-      val client = ServerSidePlanningClientFactory.buildForCatalog(spark, catalogName)
-      Some(new ServerSidePlannedTable(
-        spark, database, tableName, tableSchema, client, catalogName, ucUri, ucToken))
-    } catch {
-      case _: IllegalStateException =>
-        // Factory not registered - this shouldn't happen in production but could during testing
-        None
-    }
-  }
-
-  /**
-   * Create a ServerSidePlannedTable with an explicit client for testing.
-   *
-   * @param spark The SparkSession
-   * @param database The database name (may include catalog prefix)
-   * @param tableName The table name
-   * @param tableSchema The StructType
-   * @param client The planning client to use
-   * @param catalogName Catalog name for catalog-specific configuration keys (default: spark_catalog)
-   * @param ucUri Unity Catalog URI for credential refresh (default: empty for tests)
-   * @param ucToken Unity Catalog token for credential refresh (default: empty for tests)
-   * @return ServerSidePlannedTable instance
-   */
-  def forTesting(
-      spark: SparkSession,
-      database: String,
-      tableName: String,
-      tableSchema: StructType,
-      client: ServerSidePlanningClient,
-      catalogName: String = "spark_catalog",
-      ucUri: String = "",
-      ucToken: String = ""): ServerSidePlannedTable = {
-    new ServerSidePlannedTable(
-      spark, database, tableName, tableSchema, client, catalogName, ucUri, ucToken)
   }
 
   /**
@@ -219,34 +163,21 @@ object ServerSidePlannedTable extends DeltaLogging {
  *
  * Similar to DeltaTableV2, we accept SparkSession as a constructor parameter
  * since Tables are created on the driver and are not serialized to executors.
-<<<<<<< HEAD
-=======
- *
- * Resource Management: This class implements AutoCloseable to allow proper cleanup of the
- * underlying planning client (which may hold HTTP connections). However, Spark's Table
- * interface has no lifecycle hooks, so close() will not be called automatically by Spark.
- * The HTTP client relies on connection timeouts and finalization for cleanup in practice.
  *
  * @param catalogName Catalog name for catalog-specific configuration keys
  * @param ucUri Unity Catalog URI for credential refresh (passed to executors via Hadoop config)
  * @param ucToken Unity Catalog token for credential refresh (passed to executors via Hadoop config)
->>>>>>> 96571c8e9 ([Server-Side Planning] Extract and inject storage credentials with catalog-specific config)
  */
 class ServerSidePlannedTable(
     spark: SparkSession,
     database: String,
     tableName: String,
     tableSchema: StructType,
-<<<<<<< HEAD
-    planningClient: ServerSidePlanningClient)
-    extends Table with SupportsRead with DeltaLogging {
-=======
     planningClient: ServerSidePlanningClient,
     catalogName: String,
     ucUri: String,
     ucToken: String)
-    extends Table with SupportsRead with AutoCloseable with DeltaLogging {
->>>>>>> 96571c8e9 ([Server-Side Planning] Extract and inject storage credentials with catalog-specific config)
+    extends Table with SupportsRead with DeltaLogging {
 
   // Returns fully qualified name (e.g., "catalog.database.table").
   // The database parameter receives ident.namespace().mkString(".") from DeltaCatalog,
