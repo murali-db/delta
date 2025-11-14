@@ -121,7 +121,7 @@ object ServerSidePlannedTable extends DeltaLogging {
         "spark_catalog"
       }
 
-      // Read UC URI and token for credential refresh on executors
+      // UC URI and token are used for credential refresh on executors
       val ucUri = spark.conf.get(s"spark.sql.catalog.$catalogName.uri", "")
       val ucToken = spark.conf.get(s"spark.sql.catalog.$catalogName.token", "")
 
