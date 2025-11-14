@@ -21,12 +21,10 @@ import java.util.Locale
 
 import scala.collection.JavaConverters._
 
-import org.apache.spark.internal.MDC
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.catalog.Identifier
-import org.apache.spark.sql.delta.logging.DeltaLogKeys
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.connector.catalog.{SupportsRead, Table, TableCapability}
@@ -106,14 +104,6 @@ object ServerSidePlannedTable extends DeltaLogging {
     if (shouldUseServerSidePlanning(isUnityCatalog, hasTableCredentials, forceServerSidePlanning)) {
       val namespace = ident.namespace().mkString(".")
       val tableName = ident.name()
-
-      if (forceServerSidePlanning) {
-        logInfo(log"Forcing server-side planning for table " +
-          log"${MDC(DeltaLogKeys.TABLE_NAME, ident)}")
-      } else {
-        logInfo(log"Unity Catalog table ${MDC(DeltaLogKeys.TABLE_NAME, ident)} " +
-          log"has no credentials. Using server-side planning fallback.")
-      }
 
       // Extract catalog name from identifier namespace, or default to spark_catalog
       //
