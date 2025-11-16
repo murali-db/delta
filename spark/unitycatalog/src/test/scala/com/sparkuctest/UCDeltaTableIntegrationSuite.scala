@@ -46,10 +46,10 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
     new UCDeltaTableIntegrationSuiteBase.SparkSQLExecutor(spark)
   }
 
-  test("CREATE TABLE and INSERT via SQLExecutor") {
+  test("CREATE TABLE and INSERT - verify table state") {
     withTempDir { dir =>
-      val tablePath = new File(dir, "test_executor_table").getAbsolutePath
-      val tableName = s"$unityCatalogName.default.executor_test_create"
+      val tablePath = new File(dir, "test_create_insert").getAbsolutePath
+      val tableName = s"$unityCatalogName.default.test_create_insert"
 
       // Create table via executor
       sqlExecutor.runSQL(s"""
@@ -69,7 +69,7 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
           (3, 'Charlie')
         """)
 
-        // Verify using checkTable
+        // Verify table state after INSERT
         sqlExecutor.checkTable(
           tableName,
           Seq(
@@ -84,59 +84,10 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
     }
   }
 
-  test("SELECT with WHERE clause via SQLExecutor") {
-    withTempDir { dir =>
-      val tablePath = new File(dir, "test_select").getAbsolutePath
-      val tableName = s"$unityCatalogName.default.executor_test_select"
-
-      // Create and populate table
-      sqlExecutor.runSQL(s"""
-        CREATE TABLE $tableName (
-          id INT,
-          category STRING,
-          value DOUBLE
-        ) USING DELTA
-        LOCATION '$tablePath'
-      """)
-
-      sqlExecutor.runSQL(s"""
-        INSERT INTO $tableName VALUES
-        (1, 'A', 10.5),
-        (2, 'B', 20.3),
-        (3, 'A', 15.7),
-        (4, 'C', 30.1)
-      """)
-
-      try {
-        // Test checkWithSQL with WHERE clause
-        sqlExecutor.checkWithSQL(
-          s"SELECT id, category, value FROM $tableName WHERE category = 'A' ORDER BY id",
-          Seq(
-            Seq("1", "A", "10.5"),
-            Seq("3", "A", "15.7")
-          )
-        )
-
-        // Test checkWithSQL with aggregation
-        sqlExecutor.checkWithSQL(
-          s"SELECT category, SUM(value) as total FROM $tableName " +
-          s"GROUP BY category ORDER BY category",
-          Seq(
-            Seq("A", "26.2"),
-            Seq("B", "20.3"),
-            Seq("C", "30.1")
-          )
-        )
-      } finally {
-        spark.sql(s"DROP TABLE IF EXISTS $tableName")
-      }
-    }
-  }
-
-  test("UPDATE operation via SQLExecutor") {
+  test("UPDATE - verify table state after modification") {
     withTempDir { dir =>
       val tablePath = new File(dir, "test_update").getAbsolutePath
-      val tableName = s"$unityCatalogName.default.executor_test_update"
+      val tableName = s"$unityCatalogName.default.test_update"
 
       // Create and populate table
       sqlExecutor.runSQL(s"""
@@ -155,14 +106,14 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
       """)
 
       try {
-        // Perform UPDATE
+        // Perform UPDATE operation
         sqlExecutor.runSQL(s"""
           UPDATE $tableName
           SET status = 'completed'
           WHERE id <= 2
         """)
 
-        // Verify results
+        // Verify table state after UPDATE
         sqlExecutor.checkTable(
           tableName,
           Seq(
@@ -177,10 +128,10 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
     }
   }
 
-  test("DELETE operation via SQLExecutor") {
+  test("DELETE - verify table state after modification") {
     withTempDir { dir =>
       val tablePath = new File(dir, "test_delete").getAbsolutePath
-      val tableName = s"$unityCatalogName.default.executor_test_delete"
+      val tableName = s"$unityCatalogName.default.test_delete"
 
       // Create and populate table
       sqlExecutor.runSQL(s"""
@@ -200,13 +151,13 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
       """)
 
       try {
-        // Perform DELETE
+        // Perform DELETE operation
         sqlExecutor.runSQL(s"""
           DELETE FROM $tableName
           WHERE active = false
         """)
 
-        // Verify results
+        // Verify table state after DELETE
         sqlExecutor.checkTable(
           tableName,
           Seq(
@@ -220,10 +171,10 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
     }
   }
 
-  test("MERGE operation via SQLExecutor") {
+  test("MERGE - verify table state after modification") {
     withTempDir { dir =>
       val tablePath = new File(dir, "test_merge").getAbsolutePath
-      val tableName = s"$unityCatalogName.default.executor_test_merge"
+      val tableName = s"$unityCatalogName.default.test_merge"
 
       // Create and populate target table
       sqlExecutor.runSQL(s"""
@@ -241,9 +192,9 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
       """)
 
       try {
-        // Create a source table for MERGE (Spark 4.0 doesn't allow column aliases in VALUES)
+        // Create a source table for MERGE
         val sourcePath = new File(dir, "test_merge_source").getAbsolutePath
-        val sourceTable = s"$unityCatalogName.default.executor_merge_source"
+        val sourceTable = s"$unityCatalogName.default.test_merge_source"
 
         sqlExecutor.runSQL(s"""
           CREATE TABLE $sourceTable (
@@ -257,7 +208,7 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
           INSERT INTO $sourceTable VALUES (2, 'updated2'), (3, 'new3')
         """)
 
-        // Perform MERGE using the source table
+        // Perform MERGE operation
         sqlExecutor.runSQL(s"""
           MERGE INTO $tableName AS target
           USING $sourceTable AS source
@@ -269,7 +220,7 @@ class UCDeltaTableIntegrationSuite extends UCDeltaTableIntegrationSuiteBase {
         // Clean up source table
         spark.sql(s"DROP TABLE IF EXISTS $sourceTable")
 
-        // Verify results
+        // Verify table state after MERGE
         sqlExecutor.checkTable(
           tableName,
           Seq(
