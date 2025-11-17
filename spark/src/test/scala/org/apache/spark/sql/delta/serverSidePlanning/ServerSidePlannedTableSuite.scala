@@ -16,8 +16,7 @@
 
 package org.apache.spark.sql.delta.serverSidePlanning
 
-import org.apache.spark.sql.{QueryTest, Row}
-import org.apache.spark.sql.delta.catalog.DeltaCatalog
+import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
 
@@ -45,6 +44,28 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
     """)
   }
 
+  /**
+   * Helper method to run tests with server-side planning enabled.
+   * Automatically sets up the test factory and config, then cleans up afterwards.
+   * This prevents test pollution from leaked configuration.
+   */
+  private def withServerSidePlanningEnabled(f: => Unit): Unit = {
+    val originalConfig = spark.conf.getOption(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+    ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
+    spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "true")
+    try {
+      f
+    } finally {
+      // Reset factory
+      ServerSidePlanningClientFactory.clearFactory()
+      // Restore original config
+      originalConfig match {
+        case Some(value) => spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, value)
+        case None => spark.conf.unset(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+      }
+    }
+  }
+
   test("full query through DeltaCatalog with server-side planning") {
     // This test verifies server-side planning works end-to-end by checking:
     // (1) DeltaCatalog returns ServerSidePlannedTable (not normal table)
@@ -52,28 +73,26 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
     // If both are true, the server-side planning client worked correctly - that's the only way
     // ServerSidePlannedTable can read data.
 
-    // Enable server-side planning via test client
-    ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
-    spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "true")
+    withServerSidePlanningEnabled {
+      // (1) Verify that DeltaCatalog actually returns ServerSidePlannedTable
+      val catalog = spark.sessionState.catalogManager.catalog("spark_catalog")
+        .asInstanceOf[org.apache.spark.sql.connector.catalog.TableCatalog]
+      val loadedTable = catalog.loadTable(
+        org.apache.spark.sql.connector.catalog.Identifier.of(
+          Array("test_db"), "shared_test"))
+      assert(loadedTable.isInstanceOf[ServerSidePlannedTable],
+        s"Expected ServerSidePlannedTable but got ${loadedTable.getClass.getName}")
 
-    // (1) Verify that DeltaCatalog actually returns ServerSidePlannedTable
-    val catalog = spark.sessionState.catalogManager.catalog("spark_catalog")
-      .asInstanceOf[org.apache.spark.sql.connector.catalog.TableCatalog]
-    val loadedTable = catalog.loadTable(
-      org.apache.spark.sql.connector.catalog.Identifier.of(
-        Array("test_db"), "shared_test"))
-    assert(loadedTable.isInstanceOf[ServerSidePlannedTable],
-      s"Expected ServerSidePlannedTable but got ${loadedTable.getClass.getName}")
-
-    // (2) Execute query - should go through full server-side planning stack
-    checkAnswer(
-      sql("SELECT id, name, value FROM test_db.shared_test ORDER BY id"),
-      Seq(
-        Row(1, "alpha", 10),
-        Row(2, "beta", 20),
-        Row(3, "gamma", 30)
+      // (2) Execute query - should go through full server-side planning stack
+      checkAnswer(
+        sql("SELECT id, name, value FROM test_db.shared_test ORDER BY id"),
+        Seq(
+          Row(1, "alpha", 10),
+          Row(2, "beta", 20),
+          Row(3, "gamma", 30)
+        )
       )
-    )
+    }
   }
 
   test("verify normal path unchanged when feature disabled") {
@@ -135,22 +154,26 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
         ) USING parquet
       """)
 
-      sql("INSERT INTO readonly_test VALUES (1, 'test')")
+      // First insert WITHOUT server-side planning should succeed
+      sql("INSERT INTO readonly_test VALUES (1, 'initial')")
+      checkAnswer(
+        sql("SELECT * FROM readonly_test"),
+        Seq(Row(1, "initial"))
+      )
 
-      // Create ServerSidePlannedTable directly
-      val tableSchema = spark.table("readonly_test").schema
-      val client = new TestServerSidePlanningClient(spark)
-      val table = new ServerSidePlannedTable(
-        spark, "default", "readonly_test", tableSchema, client)
+      // Try to insert WITH server-side planning enabled - should fail
+      withServerSidePlanningEnabled {
+        val exception = intercept[AnalysisException] {
+          sql("INSERT INTO readonly_test VALUES (2, 'should_fail')")
+        }
+        assert(exception.getMessage.contains("does not support append"))
+      }
 
-      // Verify table supports read but not write
-      val capabilities = table.capabilities()
-      assert(capabilities.contains(
-        org.apache.spark.sql.connector.catalog.TableCapability.BATCH_READ),
-        "ServerSidePlannedTable should support BATCH_READ")
-      assert(!capabilities.contains(
-        org.apache.spark.sql.connector.catalog.TableCapability.BATCH_WRITE),
-        "ServerSidePlannedTable should NOT support BATCH_WRITE")
+      // Verify data unchanged - second insert didn't happen
+      checkAnswer(
+        sql("SELECT * FROM readonly_test"),
+        Seq(Row(1, "initial"))
+      )
     }
   }
 }

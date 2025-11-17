@@ -231,11 +231,9 @@ class DeltaCatalog extends DelegatingCatalogExtension
     try {
       val table = super.loadTable(ident)
 
-      // oss-only-start
       ServerSidePlannedTable.tryCreate(spark, ident, table, isUnityCatalog).foreach { sspt =>
         return sspt
       }
-      // oss-only-end
 
       table match {
         case v1: V1Table if DeltaTableUtils.isDeltaTable(v1.catalogTable) =>
