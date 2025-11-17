@@ -45,16 +45,6 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
     """)
   }
 
-  override def afterEach(): Unit = {
-    try {
-      // Clean up factory and config after each test to prevent interference
-      spark.conf.unset(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
-      ServerSidePlanningClientFactory.clearFactory()
-    } finally {
-      super.afterEach()
-    }
-  }
-
   test("full query through DeltaCatalog with server-side planning") {
     // This test verifies server-side planning works end-to-end by checking:
     // (1) DeltaCatalog returns ServerSidePlannedTable (not normal table)
@@ -87,7 +77,9 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
   }
 
   test("verify normal path unchanged when feature disabled") {
-    // Do NOT enable server-side planning
+    // Explicitly disable server-side planning
+    spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "false")
+
     // Verify that DeltaCatalog returns normal table, not ServerSidePlannedTable
     val catalog = spark.sessionState.catalogManager.catalog("spark_catalog")
       .asInstanceOf[org.apache.spark.sql.connector.catalog.TableCatalog]
@@ -96,30 +88,6 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
         Array("test_db"), "shared_test"))
     assert(!loadedTable.isInstanceOf[ServerSidePlannedTable],
       s"Expected normal table but got ServerSidePlannedTable when config is disabled")
-  }
-
-  test("loadTable() decision logic with ENABLE_SERVER_SIDE_PLANNING config") {
-    ServerSidePlanningClientFactory.setFactory(new TestServerSidePlanningClientFactory())
-
-    val catalog = spark.sessionState.catalogManager.catalog("spark_catalog")
-      .asInstanceOf[org.apache.spark.sql.connector.catalog.TableCatalog]
-      .asInstanceOf[DeltaCatalog]
-
-    // Case 1: Config enabled (force server-side planning)
-    spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "true")
-    val table1 = catalog.loadTable(
-      org.apache.spark.sql.connector.catalog.Identifier.of(
-        Array("test_db"), "shared_test"))
-    assert(table1.isInstanceOf[ServerSidePlannedTable],
-      "Expected ServerSidePlannedTable when config is enabled")
-
-    // Case 2: Config disabled, normal path
-    spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "false")
-    val table2 = catalog.loadTable(
-      org.apache.spark.sql.connector.catalog.Identifier.of(
-        Array("test_db"), "shared_test"))
-    assert(!table2.isInstanceOf[ServerSidePlannedTable],
-      "Expected normal table when config is disabled")
   }
 
   test("shouldUseServerSidePlanning() decision logic") {

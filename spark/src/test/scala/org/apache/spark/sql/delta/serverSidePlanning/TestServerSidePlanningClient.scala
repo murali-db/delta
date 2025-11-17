@@ -52,6 +52,8 @@ class TestServerSidePlanningClient(spark: SparkSession) extends ServerSidePlanni
 
       // Get file metadata (size, format) from filesystem
       // scalastyle:off deltahadoopconfiguration
+      // The rule prevents accessing Hadoop conf on executors where it could use wrong credentials
+      // for multi-catalog scenarios. Safe here: test-only code simulating server filesystem access.
       val hadoopConf = spark.sessionState.newHadoopConf()
       // scalastyle:on deltahadoopconfiguration
       val files = filePaths.map { filePath =>
