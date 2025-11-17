@@ -55,6 +55,7 @@ public class IcebergRESTServer {
   private final Map<String, String> config;
   private Catalog catalog;
   private Map<String, String> catalogConfiguration;
+  private String ucBaseUrl = "http://localhost:8080";
 
   public IcebergRESTServer() {
     this.config = Maps.newHashMap();
@@ -97,7 +98,7 @@ public class IcebergRESTServer {
   public void start(boolean join) throws Exception {
     initializeBackendCatalog();
 
-    RESTCatalogAdapter adapter = new IcebergRESTCatalogAdapterWithPlanSupport(catalog);
+    RESTCatalogAdapter adapter = new IcebergRESTCatalogAdapterWithPlanSupport(catalog, ucBaseUrl);
     // Use custom servlet that supports the /plan endpoint
     RESTCatalogServlet servlet = new IcebergRESTServletWithPlanSupport(adapter);
 
@@ -126,6 +127,14 @@ public class IcebergRESTServer {
 
   public Map<String, String> getConfiguration() {
     return catalogConfiguration;
+  }
+
+  public void setUCBaseUrl(String url) {
+    this.ucBaseUrl = url;
+  }
+
+  public String getUCBaseUrl() {
+    return ucBaseUrl;
   }
 
   public int getPort() {

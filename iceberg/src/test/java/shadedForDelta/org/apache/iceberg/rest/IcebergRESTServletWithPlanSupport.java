@@ -107,7 +107,48 @@ public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
       // Write response
       if (response != null) {
         PrintWriter writer = resp.getWriter();
-        mapper.writeValue(writer, response);
+
+        // Check if adapter stored credentials in thread-local (UC integration mode)
+        Map<String, String> credentials =
+            IcebergRESTCatalogAdapterWithPlanSupport.STORAGE_CREDENTIALS.get();
+
+        if (credentials != null && !credentials.isEmpty()) {
+          LOG.info("Injecting storage credentials into /plan response");
+
+          // Serialize response to JSON
+          String responseJson = mapper.writeValueAsString(response);
+
+          // Parse to add storage-credentials field
+          com.fasterxml.jackson.databind.JsonNode responseNode =
+              mapper.readTree(responseJson);
+          com.fasterxml.jackson.databind.node.ObjectNode responseObj =
+              (com.fasterxml.jackson.databind.node.ObjectNode) responseNode;
+
+          // Build storage-credentials array
+          com.fasterxml.jackson.databind.node.ArrayNode storageCredsArray =
+              mapper.createArrayNode();
+          com.fasterxml.jackson.databind.node.ObjectNode credEntry =
+              mapper.createObjectNode();
+          com.fasterxml.jackson.databind.node.ObjectNode configNode =
+              mapper.createObjectNode();
+
+          // Add all credential key-value pairs
+          credentials.forEach((key, value) -> configNode.put(key, value));
+
+          credEntry.set("config", configNode);
+          storageCredsArray.add(credEntry);
+          responseObj.set("storage-credentials", storageCredsArray);
+
+          // Write modified JSON
+          mapper.writeValue(writer, responseObj);
+
+          // Clean up thread-local
+          IcebergRESTCatalogAdapterWithPlanSupport.STORAGE_CREDENTIALS.remove();
+        } else {
+          // No credentials - write response normally
+          mapper.writeValue(writer, response);
+        }
+
         writer.flush();
       }
 
