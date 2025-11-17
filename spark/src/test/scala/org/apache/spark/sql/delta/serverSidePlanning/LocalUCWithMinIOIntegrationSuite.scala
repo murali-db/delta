@@ -137,10 +137,12 @@ class LocalUCWithMinIOIntegrationSuite extends QueryTest with DeltaSQLCommandTes
 
     // Start process with output redirected to log file
     val logWriter = new PrintWriter(new FileWriter(ucLogFile, true))
+    // scalastyle:off println
     val processLogger = ProcessLogger(
       line => { logWriter.println(line); logWriter.flush() },
       line => { logWriter.println(line); logWriter.flush() }
     )
+    // scalastyle:on println
 
     ucProcess = Some(processBuilder.run(processLogger))
     info(s"UC process started - logging to ${ucLogFile.getAbsolutePath}")
@@ -169,7 +171,8 @@ class LocalUCWithMinIOIntegrationSuite extends QueryTest with DeltaSQLCommandTes
     if (minioStarted) {
       try {
         info("Stopping MinIO...")
-        val dockerComposeCmd = if (isDockerComposeV2Available) "docker compose" else "docker-compose"
+        val dockerComposeCmd =
+          if (isDockerComposeV2Available) "docker compose" else "docker-compose"
         val stopCmd = s"$dockerComposeCmd down"
         Process(stopCmd, minioDockerComposeDir).!
         info("MinIO stopped")
@@ -238,8 +241,8 @@ class LocalUCWithMinIOIntegrationSuite extends QueryTest with DeltaSQLCommandTes
     assert(checkUCRunning(), "UC should be running")
 
     info("Service lifecycle test passed")
-    info("✓ MinIO is running on localhost:9000")
-    info("✓ Unity Catalog OSS is running on localhost:8080")
+    info("MinIO is running on localhost:9000")
+    info("Unity Catalog OSS is running on localhost:8080")
     info("Note: IcebergRESTServer (IRC) must be started manually in iceberg module tests")
     info("Ready for end-to-end integration testing")
   }
