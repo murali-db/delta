@@ -140,3 +140,9 @@ kernel/kernel-benchmarks/benchmark_report.json
 spark/unitycatalog/etc/
 .scala-build/
 
+
+# SparkShell cache
+.sparkshell_cache/
+experimental/sparkshell/target/
+experimental/sparkshell/project/target/
+experimental/sparkshell/project/project/
