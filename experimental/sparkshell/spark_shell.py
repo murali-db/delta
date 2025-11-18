@@ -54,6 +54,9 @@ from pathlib import Path
 from typing import Optional, Union, Tuple
 from dataclasses import dataclass, field
 
+# Import Delta builder
+from delta_builder import DeltaBuilder, DeltaBuildCache
+
 
 @dataclass
 class UCConfig:
@@ -97,6 +100,12 @@ class SparkShell:
         source: str,
         port: int = 8080,
         temp_dir: Optional[str] = None,
+        # Delta build parameters (NEW)
+        delta_repo_url: Optional[str] = None,
+        delta_branch: str = "master",
+        delta_version: Optional[str] = None,
+        use_local_delta: Optional[str] = None,
+        # Existing parameters
         uc_config: Optional[UCConfig] = None,
         op_config: Optional[OpConfig] = None,
         spark_config: Optional[SparkConfig] = None
@@ -108,6 +117,11 @@ class SparkShell:
             source: GitHub URL or local directory path containing SparkApp code
             port: Port for the server (default: 8080)
             temp_dir: Custom temp directory (default: system temp)
+            delta_repo_url: GitHub URL to Delta repository (e.g., "https://github.com/delta-io/delta")
+                          If provided, will clone, build, and use custom Delta
+            delta_branch: Branch to checkout from Delta repo (default: "master")
+            delta_version: Delta version to build (auto-detected if None)
+            use_local_delta: Path to local Delta repository (skip clone if provided)
             uc_config: Unity Catalog configuration (UCConfig object)
             op_config: Operational configuration (OpConfig object)
             spark_config: Spark configuration (SparkConfig object)
@@ -115,6 +129,17 @@ class SparkShell:
         self.source = source
         self.port = port
         self.temp_dir = temp_dir
+
+        # Delta build parameters (NEW)
+        self.delta_repo_url = delta_repo_url
+        self.delta_branch = delta_branch
+        self.delta_version = delta_version
+        self.use_local_delta = use_local_delta
+
+        # Initialize Delta builder if needed
+        self.delta_builder = None
+        if delta_repo_url or use_local_delta:
+            self.delta_builder = DeltaBuilder(verbose=op_config.verbose if op_config else True)
 
         # Initialize configurations with defaults or provided config objects
         self.op_config = op_config or OpConfig()
@@ -134,6 +159,7 @@ class SparkShell:
         self.process: Optional[subprocess.Popen] = None
         self.jar_path: Optional[Path] = None
         self.is_ready = False
+        self.delta_dir: Optional[Path] = None  # NEW: Track Delta source directory
 
         # API base URL
         self.base_url = f"http://localhost:{self.port}"
@@ -478,7 +504,144 @@ class SparkShell:
             raise RuntimeError(f"Build timeout after {self.op_config.build_timeout} seconds")
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Build failed: {str(e)}")
-    
+
+    def _detect_delta_version(self, delta_dir: Path) -> str:
+        """
+        Detect Delta version from version.sbt file.
+
+        Args:
+            delta_dir: Path to Delta source directory
+
+        Returns:
+            Version string (e.g., "3.4.0-SNAPSHOT")
+        """
+        version_file = delta_dir / "version.sbt"
+        if not version_file.exists():
+            raise RuntimeError(f"version.sbt not found in {delta_dir}")
+
+        with open(version_file) as f:
+            for line in f:
+                if "version :=" in line:
+                    # Extract version from: ThisBuild / version := "3.4.0-SNAPSHOT"
+                    version = line.split('"')[1]
+                    if self.op_config.verbose:
+                        print(f"[SparkShell] Detected Delta version: {version}")
+                    return version
+
+        raise RuntimeError(f"Could not parse version from {version_file}")
+
+    def _get_git_commit(self, git_dir: Path) -> str:
+        """Get current git commit hash from a directory."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=git_dir,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                raise RuntimeError(f"Git command failed: {result.stderr}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to get git commit: {e}")
+
+    def _prepare_delta(self):
+        """
+        Prepare custom Delta build if requested.
+
+        This method:
+        1. Clones Delta from GitHub (or uses local path)
+        2. Detects Delta version from version.sbt
+        3. Builds and publishes Delta to ~/.m2
+        4. Sets DELTA_VERSION environment variable for SparkShell build
+        5. Uses caching to avoid redundant builds
+
+        Returns:
+            Path to Delta artifacts in ~/.m2, or None if using default Delta
+        """
+        # Skip if no custom Delta requested
+        if not self.delta_builder:
+            return None
+
+        print("[SparkShell] Preparing custom Delta build...")
+
+        # Determine Delta source
+        if self.use_local_delta:
+            # Use local Delta repository
+            self.delta_dir = Path(self.use_local_delta).expanduser().resolve()
+            if not self.delta_dir.exists():
+                raise RuntimeError(f"Local Delta directory not found: {self.delta_dir}")
+
+            print(f"[SparkShell] Using local Delta from: {self.delta_dir}")
+            commit = self._get_git_commit(self.delta_dir)
+        else:
+            # Clone from GitHub
+            delta_temp_dir = tempfile.mkdtemp(prefix="delta_build_")
+            self.delta_dir = Path(delta_temp_dir)
+
+            print(f"[SparkShell] Cloning Delta from {self.delta_repo_url} ({self.delta_branch})")
+            commit = self.delta_builder.safe_git_clone(
+                self.delta_repo_url,
+                self.delta_branch,
+                str(self.delta_dir)
+            )
+
+        # Detect version if not specified
+        if not self.delta_version:
+            self.delta_version = self._detect_delta_version(self.delta_dir)
+
+        print(f"[SparkShell] Delta version: {self.delta_version}")
+        print(f"[SparkShell] Delta commit: {commit[:8]}")
+
+        # Check cache
+        cache_key = self.delta_builder.cache.get_cache_key(
+            self.delta_repo_url or str(self.delta_dir),
+            self.delta_branch,
+            commit
+        )
+
+        cached = self.delta_builder.cache.get_cached_build(cache_key)
+        if cached:
+            print(f"[SparkShell] Using cached Delta build (key: {cache_key})")
+            # Still need to set env var for SparkShell build
+            os.environ["DELTA_VERSION"] = self.delta_version
+            return cached
+
+        # Validate compatibility (Spark 4.0.0 is hardcoded in build.sbt)
+        if not self.delta_builder.validate_compatibility(
+            self.delta_branch,
+            "4.0.0",
+            "2.13"
+        ):
+            print("[SparkShell] WARNING: Delta branch may not be compatible with Spark 4.0")
+
+        # Build and publish Delta
+        print(f"[SparkShell] Building Delta {self.delta_version}...")
+        print("[SparkShell] This may take 5-10 minutes on first build...")
+
+        artifact_path = self.delta_builder.build_and_publish(
+            str(self.delta_dir),
+            self.delta_version,
+            clear_cache=True
+        )
+
+        # Cache the build
+        self.delta_builder.cache.cache_build(cache_key, {
+            "version": self.delta_version,
+            "commit": commit,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "branch": self.delta_branch
+        })
+
+        # Set environment variable for SparkShell build
+        os.environ["DELTA_VERSION"] = self.delta_version
+        print(f"[SparkShell] Set DELTA_VERSION={self.delta_version}")
+
+        print(f"[SparkShell] Delta build complete! Published to: {artifact_path}")
+        return artifact_path
+
     def start(self, force_refresh: bool = False):
         """
         Start the SparkApp server (automatically handles setup and build if needed).
@@ -486,6 +649,10 @@ class SparkShell:
         Args:
             force_refresh: If True, force fresh download and rebuild, bypassing cache (default: False)
         """
+        # NEW: Prepare custom Delta build if requested (must happen before setup)
+        if self.delta_builder:
+            self._prepare_delta()
+
         # Automatically setup if not already done
         if not self.work_dir:
             self.setup(force_refresh=force_refresh)
