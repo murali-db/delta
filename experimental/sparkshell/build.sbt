@@ -52,12 +52,29 @@ javaOptions ++= Seq(
   "-Djdk.reflect.useDirectMethodHandle=false"
 )
 
+// Delta version from environment variable or default
+val getDeltaVersion = settingKey[String](
+  "Get Delta version from DELTA_VERSION env var. Default: 4.0.0"
+)
+
+getDeltaVersion := {
+  sys.env.get("DELTA_VERSION") match {
+    case Some(v) =>
+      println(s"[SparkShell] Using Delta version from DELTA_VERSION: $v")
+      v
+    case None =>
+      val defaultVersion = "4.0.0"
+      println(s"[SparkShell] Using default Delta version: $defaultVersion")
+      defaultVersion
+  }
+}
+
 libraryDependencies ++= Seq(
   // Spark
   "org.apache.spark" %% "spark-sql" % "4.0.0",
-  
-  // Delta Lake
-  "io.delta" %% "delta-spark" % "4.0.0",
+
+  // Delta Lake (version from environment or default)
+  "io.delta" %% "delta-spark" % getDeltaVersion.value,
   
   // Unity Catalog
   "io.unitycatalog" % "unitycatalog-spark_2.13" % "0.3.0",
