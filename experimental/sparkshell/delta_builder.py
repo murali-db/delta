@@ -200,13 +200,18 @@ class DeltaBuilder:
         Validate compatibility between Delta branch and Spark version.
 
         Args:
-            delta_branch: Delta branch name
+            delta_branch: Delta branch name (can be None for local repos)
             spark_version: Spark version (e.g., "4.0")
             scala_version: Scala version (e.g., "2.13")
 
         Returns:
             True if compatible, False otherwise
         """
+        # If no branch specified (local repo), assume compatible with warning
+        if not delta_branch:
+            self._log("⚠ No branch specified (local Delta), skipping compatibility check")
+            return True
+
         # Extract major.minor from spark_version
         spark_major_minor = ".".join(spark_version.split(".")[:2])
 
