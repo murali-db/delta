@@ -146,3 +146,4 @@ spark/unitycatalog/etc/
 experimental/sparkshell/target/
 experimental/sparkshell/project/target/
 experimental/sparkshell/project/project/
+experimental/sparkshell/venv/
