@@ -28,6 +28,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import shadedForDelta.org.apache.iceberg.rest.responses.ErrorResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,12 +44,12 @@ import org.slf4j.LoggerFactory;
 public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergRESTServletWithPlanSupport.class);
 
-  private final RESTCatalogAdapter adapter;
+  private final IcebergRESTCatalogAdapterWithPlanSupport adapter;
   private final ObjectMapper mapper;
 
   public IcebergRESTServletWithPlanSupport(RESTCatalogAdapter adapter) {
     super(adapter);
-    this.adapter = adapter;
+    this.adapter = (IcebergRESTCatalogAdapterWithPlanSupport) adapter;
     this.mapper = RESTObjectMapper.mapper();
   }
 
@@ -104,10 +106,36 @@ public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
           responseHeaders -> responseHeaders.forEach((k, v) -> resp.setHeader(k, v))
       );
 
-      // Write response
+      // Write response with injected credentials
       if (response != null) {
+        // Get test credentials from adapter
+        String[] credentials = adapter.getTestCredentials();
+
+        // Serialize response to JSON
+        String jsonResponse = mapper.writeValueAsString(response);
+
+        // Parse to Jackson node for modification
+        ObjectNode jsonNode = (ObjectNode) mapper.readTree(jsonResponse);
+
+        // Build storage-credentials structure
+        ObjectNode config = mapper.createObjectNode();
+        config.put("s3.access-key-id", credentials[0]);
+        config.put("s3.secret-access-key", credentials[1]);
+        config.put("s3.session-token", credentials[2]);
+
+        ObjectNode credential = mapper.createObjectNode();
+        credential.put("type", "aws");
+        credential.set("config", config);
+
+        ArrayNode storageCredentials = mapper.createArrayNode();
+        storageCredentials.add(credential);
+
+        // Add storage-credentials to response JSON
+        jsonNode.set("storage-credentials", storageCredentials);
+
+        // Write modified JSON
         PrintWriter writer = resp.getWriter();
-        mapper.writeValue(writer, response);
+        mapper.writeValue(writer, jsonNode);
         writer.flush();
       }
 

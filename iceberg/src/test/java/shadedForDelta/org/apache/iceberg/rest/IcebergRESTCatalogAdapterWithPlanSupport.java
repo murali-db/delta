@@ -18,6 +18,7 @@ package shadedForDelta.org.apache.iceberg.rest;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -48,9 +49,33 @@ class IcebergRESTCatalogAdapterWithPlanSupport extends RESTCatalogAdapter {
 
   private final Catalog catalog;
 
+  // Test credentials to inject into /plan responses (for testing credential flow)
+  // Default to empty strings so we always have credentials in response
+  private String testAccessKey = "";
+  private String testSecretKey = "";
+  private String testSessionToken = "";
+
   IcebergRESTCatalogAdapterWithPlanSupport(Catalog catalog) {
     super(catalog);
     this.catalog = catalog;
+  }
+
+  /**
+   * Set test credentials to be returned in /plan responses.
+   * Used for testing credential injection flow.
+   */
+  public void setTestCredentials(String accessKey, String secretKey, String sessionToken) {
+    this.testAccessKey = accessKey;
+    this.testSecretKey = secretKey;
+    this.testSessionToken = sessionToken;
+  }
+
+  /**
+   * Get test credentials for /plan responses.
+   * Always returns an array of 3 strings (may be empty strings if not configured).
+   */
+  public String[] getTestCredentials() {
+    return new String[] { testAccessKey, testSecretKey, testSessionToken };
   }
 
   @Override
@@ -184,6 +209,7 @@ class IcebergRESTCatalogAdapterWithPlanSupport extends RESTCatalogAdapter {
     LOG.debug("Table has {} partition specs", specsById.size());
 
     // 9. Build response (Pattern 1: COMPLETED with direct tasks)
+    // Note: Servlet will inject test credentials into JSON if this is a /plan request
     return PlanTableScanResponse.builder()
         .withPlanStatus(PlanStatus.COMPLETED)
         .withFileScanTasks(fileScanTasks)
