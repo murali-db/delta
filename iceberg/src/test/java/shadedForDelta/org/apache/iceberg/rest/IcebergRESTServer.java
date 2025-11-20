@@ -55,6 +55,7 @@ public class IcebergRESTServer {
   private final Map<String, String> config;
   private Catalog catalog;
   private Map<String, String> catalogConfiguration;
+  private IcebergRESTCatalogAdapterWithPlanSupport adapter;
 
   public IcebergRESTServer() {
     this.config = Maps.newHashMap();
@@ -97,7 +98,7 @@ public class IcebergRESTServer {
   public void start(boolean join) throws Exception {
     initializeBackendCatalog();
 
-    RESTCatalogAdapter adapter = new IcebergRESTCatalogAdapterWithPlanSupport(catalog);
+    this.adapter = new IcebergRESTCatalogAdapterWithPlanSupport(catalog);
     // Use custom servlet that supports the /plan endpoint
     RESTCatalogServlet servlet = new IcebergRESTServletWithPlanSupport(adapter);
 
@@ -140,6 +141,18 @@ public class IcebergRESTServer {
   public void stop() throws Exception {
     if (httpServer != null) {
       httpServer.stop();
+    }
+  }
+
+  /**
+   * Configure test credentials to be returned in /plan responses.
+   * Used for testing credential injection flow.
+   */
+  public void setTestCredentials(String accessKey, String secretKey, String sessionToken) {
+    if (adapter != null) {
+      adapter.setTestCredentials(accessKey, secretKey, sessionToken);
+    } else {
+      throw new IllegalStateException("Server must be started before setting test credentials");
     }
   }
 
