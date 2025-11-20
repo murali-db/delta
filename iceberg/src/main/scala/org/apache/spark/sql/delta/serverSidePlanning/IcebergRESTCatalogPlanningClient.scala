@@ -21,7 +21,9 @@ import java.lang.reflect.Method
 import java.util.Locale
 
 import scala.jdk.CollectionConverters._
+import scala.util.{Failure, Success, Try}
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.apache.http.client.methods.HttpPost
 import org.apache.http.entity.{ContentType, StringEntity}
 import org.apache.http.util.EntityUtils
@@ -113,7 +115,7 @@ class IcebergRESTCatalogPlanningClient(
             s"expected 'completed'. Table: $database.$table")
         }
 
-        convertToScanPlan(icebergResponse)
+        convertToScanPlan(icebergResponse, responseBody)
       } else {
         // TODO: Parse structured ErrorResponse JSON from Iceberg REST spec instead of raw body
         throw new IOException(
@@ -125,12 +127,19 @@ class IcebergRESTCatalogPlanningClient(
     }
   }
 
+  // TODO: PlanTableScanResponse in Iceberg REST spec does not include storage-credentials yet.
+  // Server sends PlanTableScanResponse and injects credentials at the servlet level.
   /**
    * Convert Iceberg PlanTableScanResponse to simple ScanPlan data class.
    *
    * Validates response structure and ensures the table is unpartitioned.
+   *
+   * @param response Parsed Iceberg response containing file scan tasks
+   * @param responseBody Raw JSON response body for extracting credentials
    */
-  private def convertToScanPlan(response: PlanTableScanResponse): ScanPlan = {
+  private def convertToScanPlan(
+      response: PlanTableScanResponse,
+      responseBody: String): ScanPlan = {
     require(response != null, "PlanTableScanResponse cannot be null")
     require(response.fileScanTasks() != null, "File scan tasks cannot be null")
 
@@ -153,7 +162,49 @@ class IcebergRESTCatalogPlanningClient(
       )
     }.toSeq
 
-    ScanPlan(files = files)
+    // Extract credentials from raw JSON response
+    // The credentials are in storage-credentials[0].config as per UC Iceberg REST spec
+    val credentials = extractCredentials(responseBody)
+
+    ScanPlan(files = files, credentials = credentials)
+  }
+
+  /**
+   * Extract storage credentials from the raw JSON response.
+   * Returns None if credentials are not present in the response.
+   *
+   * The credentials are located at: storage-credentials[0].config with keys:
+   * - s3.access-key-id
+   * - s3.secret-access-key
+   * - s3.session-token
+   */
+  private def extractCredentials(responseBody: String): Option[StorageCredentials] = {
+    Try {
+      val mapper = new ObjectMapper()
+      val jsonNode = mapper.readTree(responseBody)
+
+      // Get storage-credentials array
+      val storageCredsNode = Option(jsonNode.get("storage-credentials"))
+        .filter(node => node.isArray && node.size() > 0)
+        .getOrElse(return None)
+
+      // Get config node from first credential
+      val configNode = Option(storageCredsNode.get(0).get("config"))
+        .getOrElse(return None)
+
+      // Extract all three required credential fields
+      val accessKey = Option(configNode.get("s3.access-key-id")).map(_.asText())
+      val secretKey = Option(configNode.get("s3.secret-access-key")).map(_.asText())
+      val sessionToken = Option(configNode.get("s3.session-token")).map(_.asText())
+
+      // Return credentials only if all three fields are present
+      for {
+        access <- accessKey
+        secret <- secretKey
+        session <- sessionToken
+      } yield StorageCredentials(access, secret, session)
+
+    }.toOption.flatten
   }
 
   /**
