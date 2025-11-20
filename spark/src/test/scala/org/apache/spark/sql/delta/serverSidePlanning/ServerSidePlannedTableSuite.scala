@@ -176,4 +176,18 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       )
     }
   }
+
+  test("UnityCatalogMetadata constructs IRC endpoint from UC URI") {
+    val ucUri = "https://my-workspace.cloud.databricks.com"
+    val metadata = UnityCatalogMetadata(
+      catalogName = "test_catalog",
+      ucUri = ucUri,
+      ucToken = "test-token",
+      tableProps = Map.empty
+    )
+
+    val expectedEndpoint =
+      "https://my-workspace.cloud.databricks.com/api/2.1/unity-catalog/iceberg"
+    assert(metadata.planningEndpointUri.get == expectedEndpoint)
+  }
 }

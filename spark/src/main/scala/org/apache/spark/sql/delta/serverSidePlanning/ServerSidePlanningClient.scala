@@ -59,15 +59,15 @@ trait ServerSidePlanningClient {
  */
 trait ServerSidePlanningClientFactory {
   /**
-   * Create a client for a specific catalog by reading catalog-specific configuration.
-   * This method reads configuration from spark.sql.catalog.<catalogName>.uri and
-   * spark.sql.catalog.<catalogName>.token.
+   * Create a client using metadata from catalog's loadTable.
    *
    * @param spark The SparkSession
-   * @param catalogName The name of the catalog (e.g., "spark_catalog", "unity")
-   * @return A ServerSidePlanningClient configured for the specified catalog
+   * @param metadata Metadata extracted from loadTable response
+   * @return A ServerSidePlanningClient configured with the metadata
    */
-  def buildForCatalog(spark: SparkSession, catalogName: String): ServerSidePlanningClient
+  def buildFromMetadata(
+      spark: SparkSession,
+      metadata: ServerSidePlanningMetadata): ServerSidePlanningClient
 }
 
 /**
@@ -107,9 +107,11 @@ object ServerSidePlanningClientFactory {
   }
 
   /**
-   * Convenience method to create a client for a specific catalog using the registered factory.
+   * Convenience method to create a client from metadata using the registered factory.
    */
-  def buildForCatalog(spark: SparkSession, catalogName: String): ServerSidePlanningClient = {
-    getFactory().buildForCatalog(spark, catalogName)
+  def buildFromMetadata(
+      spark: SparkSession,
+      metadata: ServerSidePlanningMetadata): ServerSidePlanningClient = {
+    getFactory().buildFromMetadata(spark, metadata)
   }
 }
