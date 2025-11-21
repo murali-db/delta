@@ -155,6 +155,40 @@ object ServerSidePlannedTable extends DeltaLogging {
   }
 
   /**
+   * Create a ServerSidePlannedTable with an explicit client for testing.
+   *
+   * This bypasses the normal production creation path (tryCreate → create) which goes through
+   * factory registration and metadata extraction. This lets tests validate the full credential
+   * flow (IRC server → client → Hadoop config → filesystem) without needing Unity Catalog or
+   * going through DeltaCatalog.loadTable().
+   *
+   * @param spark The SparkSession
+   * @param database The database name (may include catalog prefix)
+   * @param tableName The table name
+   * @param tableSchema The StructType
+   * @param client The planning client to use
+   * @param catalogName Catalog name for catalog-specific configuration keys
+   *                    (default: spark_catalog)
+   * @param ucUri Unity Catalog URI for credential refresh
+   *              (default: empty for tests)
+   * @param ucToken Unity Catalog token for credential refresh
+   *                (default: empty for tests)
+   * @return ServerSidePlannedTable instance
+   */
+  def forTesting(
+      spark: SparkSession,
+      database: String,
+      tableName: String,
+      tableSchema: StructType,
+      client: ServerSidePlanningClient,
+      catalogName: String = "spark_catalog",
+      ucUri: String = "",
+      ucToken: String = ""): ServerSidePlannedTable = {
+    new ServerSidePlannedTable(
+      spark, database, tableName, tableSchema, client, catalogName, ucUri, ucToken)
+  }
+
+  /**
    * Check if a table has credentials available.
    * Unity Catalog tables may lack credentials when accessed without proper permissions.
    * UC injects credentials as table properties, see:
