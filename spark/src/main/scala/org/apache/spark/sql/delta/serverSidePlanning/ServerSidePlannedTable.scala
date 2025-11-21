@@ -157,6 +157,11 @@ object ServerSidePlannedTable extends DeltaLogging {
   /**
    * Create a ServerSidePlannedTable with an explicit client for testing.
    *
+   * This bypasses the normal production creation path (tryCreate → create) which goes through
+   * factory registration and metadata extraction. This lets tests validate the full credential
+   * flow (IRC server → client → Hadoop config → filesystem) without needing Unity Catalog or
+   * going through DeltaCatalog.loadTable().
+   *
    * @param spark The SparkSession
    * @param database The database name (may include catalog prefix)
    * @param tableName The table name
