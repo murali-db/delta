@@ -68,7 +68,10 @@ object ServerSidePlannedTable extends DeltaLogging {
       isUnityCatalog: Boolean,
       hasCredentials: Boolean,
       forceServerSidePlanning: Boolean): Boolean = {
-    (isUnityCatalog && !hasCredentials) || forceServerSidePlanning
+    // TEMPORARY: Always use server-side planning for testing
+    true
+    // Original logic (commented out):
+    // (isUnityCatalog && !hasCredentials) || forceServerSidePlanning
   }
 
   /**
