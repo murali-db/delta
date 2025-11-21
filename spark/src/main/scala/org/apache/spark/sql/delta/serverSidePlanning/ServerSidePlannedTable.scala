@@ -155,6 +155,40 @@ object ServerSidePlannedTable extends DeltaLogging {
   }
 
   /**
+   * Create a ServerSidePlannedTable with an explicit client for testing.
+   *
+   * This bypasses the normal production creation path (tryCreate → create) which goes through
+   * factory registration and metadata extraction. This lets tests validate the full credential
+   * flow (IRC server → client → Hadoop config → filesystem) without needing Unity Catalog or
+   * going through DeltaCatalog.loadTable().
+   *
+   * @param spark The SparkSession
+   * @param database The database name (may include catalog prefix)
+   * @param tableName The table name
+   * @param tableSchema The StructType
+   * @param client The planning client to use
+   * @param catalogName Catalog name for catalog-specific configuration keys
+   *                    (default: spark_catalog)
+   * @param ucUri Unity Catalog URI for credential refresh
+   *              (default: empty for tests)
+   * @param ucToken Unity Catalog token for credential refresh
+   *                (default: empty for tests)
+   * @return ServerSidePlannedTable instance
+   */
+  def forTesting(
+      spark: SparkSession,
+      database: String,
+      tableName: String,
+      tableSchema: StructType,
+      client: ServerSidePlanningClient,
+      catalogName: String = "spark_catalog",
+      ucUri: String = "",
+      ucToken: String = ""): ServerSidePlannedTable = {
+    new ServerSidePlannedTable(
+      spark, database, tableName, tableSchema, client, catalogName, ucUri, ucToken)
+  }
+
+  /**
    * Check if a table has credentials available.
    * Unity Catalog tables may lack credentials when accessed without proper permissions.
    * UC injects credentials as table properties, see:
@@ -255,7 +289,8 @@ class ServerSidePlannedScan(
   }
 
   override def createReaderFactory(): PartitionReaderFactory = {
-    new ServerSidePlannedFilePartitionReaderFactory(spark, tableSchema)
+    new ServerSidePlannedFilePartitionReaderFactory(
+      spark, tableSchema, scanPlan.credentials, catalogName, ucUri, ucToken)
   }
 }
 
@@ -270,10 +305,21 @@ case class ServerSidePlannedFileInputPartition(
 /**
  * Factory for creating PartitionReaders that read server-side planned files.
  * Builds reader functions on the driver for Parquet files.
+ *
+ * @param credentials Optional storage credentials from server-side planning response.
+ *                    When present, these credentials are injected into the Hadoop configuration
+ *                    for S3A file access.
+ * @param catalogName Catalog name for catalog-specific configuration keys
+ * @param ucUri Unity Catalog URI - injected into Hadoop config for credential refresh
+ * @param ucToken Unity Catalog token - injected into Hadoop config for credential refresh
  */
 class ServerSidePlannedFilePartitionReaderFactory(
     spark: SparkSession,
-    schema: StructType)
+    schema: StructType,
+    credentials: Option[StorageCredentials],
+    catalogName: String,
+    ucUri: String,
+    ucToken: String)
     extends PartitionReaderFactory {
 
   import org.apache.spark.util.SerializableConfiguration
@@ -284,7 +330,38 @@ class ServerSidePlannedFilePartitionReaderFactory(
   // included in the Hadoop configuration. This would fail if users specify credentials in
   // DataFrame read options expecting them to be used when accessing the underlying files.
   // However, for now we accept this limitation to avoid requiring a DeltaLog parameter.
-  private val hadoopConf = new SerializableConfiguration(spark.sessionState.newHadoopConf())
+  private val hadoopConf = {
+    val conf = spark.sessionState.newHadoopConf()
+
+    // Inject temporary credentials from server-side planning response if present
+    credentials.foreach { creds =>
+      conf.set("fs.s3a.access.key", creds.accessKeyId)
+      conf.set("fs.s3a.secret.key", creds.secretAccessKey)
+      conf.set("fs.s3a.session.token", creds.sessionToken)
+    }
+
+    // Inject Unity Catalog URI and token for future credential refresh on executors
+    // Use catalog-specific configuration keys to support multiple catalogs
+    //
+    // TODO: Implement credential refresh in cloud-specific filesystem implementations
+    // (S3CredentialFileSystem, AzureCredentialFileSystem, GCSCredentialFileSystem).
+    // These classes should:
+    // 1. Detect when credentials are expiring (check token expiration time)
+    // 2. Call table service endpoint (not UC) to refresh credentials
+    // 3. Use catalogName/ucUri/ucToken from Hadoop config to authenticate refresh request
+    // 4. Update Hadoop config with new credentials
+    // This will enable long-running queries to continue after initial credentials expire.
+    if (ucUri.nonEmpty) {
+      conf.set(s"spark.sql.catalog.$catalogName.uri", ucUri)
+    }
+    if (ucToken.nonEmpty) {
+      conf.set(s"spark.sql.catalog.$catalogName.token", ucToken)
+    }
+
+    // After serialization, executors will have access to these credentials for S3 file reads
+
+    new SerializableConfiguration(conf)
+  }
   // scalastyle:on deltahadoopconfiguration
 
   // Pre-build reader function for Parquet on the driver
