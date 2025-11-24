@@ -176,4 +176,64 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       )
     }
   }
+
+  test("UnityCatalogMetadata constructs IRC endpoint from UC URI") {
+    val ucUri = "https://my-workspace.cloud.databricks.com"
+    val metadata = UnityCatalogMetadata(
+      catalogName = "test_catalog",
+      ucUri = ucUri,
+      ucToken = "test-token",
+      tableProps = Map.empty
+    )
+
+    // This test validates the fallback case where /v1/config is unreachable.
+    // The endpoint construction logic attempts to call /v1/config at the UC URI,
+    // but since there's no server at this URL, it falls back to the simple path
+    // without prefix. For tests of the prefix case with a real IRC server, see
+    // IcebergRESTCatalogPlanningClientSuite.
+    val expectedEndpoint =
+      "https://my-workspace.cloud.databricks.com/api/2.1/unity-catalog/iceberg"
+    assert(metadata.planningEndpointUri.get == expectedEndpoint)
+  }
+
+  test("DefaultMetadata returns None for all optional fields") {
+    val metadata = DefaultMetadata("test_catalog")
+
+    assert(metadata.catalogName == "test_catalog")
+    assert(metadata.planningEndpointUri.isEmpty)
+    assert(metadata.authToken.isEmpty)
+    assert(metadata.unityCatalogUri.isEmpty)
+    assert(metadata.unityCatalogToken.isEmpty)
+    assert(metadata.tableProperties.isEmpty)
+  }
+
+  test("TestMetadata returns injected values") {
+    val metadata = TestMetadata(
+      catalogName = "test_catalog",
+      endpointUri = "http://localhost:8080/api",
+      token = "test-token",
+      ucUri = "http://localhost:8080",
+      ucToken = "uc-token",
+      props = Map("key1" -> "value1", "key2" -> "value2")
+    )
+
+    assert(metadata.catalogName == "test_catalog")
+    assert(metadata.planningEndpointUri.contains("http://localhost:8080/api"))
+    assert(metadata.authToken.contains("test-token"))
+    assert(metadata.unityCatalogUri.contains("http://localhost:8080"))
+    assert(metadata.unityCatalogToken.contains("uc-token"))
+    assert(metadata.tableProperties == Map("key1" -> "value1", "key2" -> "value2"))
+  }
+
+  test("TestMetadata handles empty ucUri and ucToken") {
+    val metadata = TestMetadata(
+      catalogName = "test_catalog",
+      endpointUri = "http://localhost:8080/api",
+      token = "test-token"
+      // ucUri and ucToken use defaults (empty strings)
+    )
+
+    assert(metadata.unityCatalogUri.isEmpty)
+    assert(metadata.unityCatalogToken.isEmpty)
+  }
 }

@@ -52,6 +52,22 @@ public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
   }
 
   @Override
+  protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+      throws IOException {
+
+    String path = req.getPathInfo();
+
+    // Check if this is a /v1/config endpoint request
+    if (path != null && path.endsWith("/v1/config")) {
+      LOG.debug("Custom servlet handling /v1/config request for path: {}", path);
+      handleConfigRequest(req, resp);
+    } else {
+      // For all other requests, use standard handling
+      super.doGet(req, resp);
+    }
+  }
+
+  @Override
   protected void doPost(HttpServletRequest req, HttpServletResponse resp)
       throws IOException {
 
@@ -64,6 +80,60 @@ public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
     } else {
       // For all other requests, use standard handling
       super.doPost(req, resp);
+    }
+  }
+
+  private void handleConfigRequest(HttpServletRequest req, HttpServletResponse resp)
+      throws IOException {
+    try {
+      // Extract request components
+      String path = req.getPathInfo();
+      // HTTPRequest paths should not start with /, so strip it
+      if (path != null && path.startsWith("/")) {
+        path = path.substring(1);
+      }
+      Map<String, String> headers = extractHeaders(req);
+      Map<String, String> queryParams = extractQueryParams(req);
+
+      LOG.debug("Config request - path: {}", path);
+
+      // Build HTTPRequest for GET /v1/config
+      HTTPRequest httpRequest = adapter.buildRequest(
+          HTTPRequest.HTTPMethod.GET,
+          path,
+          queryParams,
+          headers,
+          null  // No body for GET requests
+      );
+
+      // Set up response handling
+      resp.setStatus(200);
+      resp.setContentType("application/json");
+
+      // Execute the request through the adapter
+      RESTResponse response = adapter.execute(
+          httpRequest,
+          RESTResponse.class,
+          error -> handleError(resp, error),
+          responseHeaders -> responseHeaders.forEach((k, v) -> resp.setHeader(k, v))
+      );
+
+      // Write response
+      if (response != null) {
+        PrintWriter writer = resp.getWriter();
+        mapper.writeValue(writer, response);
+        writer.flush();
+      }
+
+    } catch (Exception e) {
+      LOG.error("Error handling /v1/config request: {}", e.getMessage(), e);
+      resp.setStatus(500);
+      ErrorResponse error = ErrorResponse.builder()
+          .responseCode(500)
+          .withType("InternalServerError")
+          .withMessage("Failed to process config request: " + e.getMessage())
+          .build();
+      mapper.writeValue(resp.getWriter(), error);
     }
   }
 
