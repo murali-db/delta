@@ -46,6 +46,19 @@ trait ServerSidePlanningMetadata {
    * For example, table UUID, credential hints, etc.
    */
   def tableProperties: Map[String, String]
+
+  /**
+   * Inject credential refresh context into Hadoop configuration.
+   * Used by ServerSidePlannedFilePartitionReaderFactory to configure credential refresh.
+   *
+   * For UC: Sets spark.sql.catalog.$catalogName.uri and .token
+   * For non-UC: No-op
+   *
+   * @param conf Hadoop configuration to inject into
+   */
+  def injectCredentialRefreshContext(conf: org.apache.hadoop.conf.Configuration): Unit = {
+    // Default: no-op for non-UC catalogs
+  }
 }
 
 /**

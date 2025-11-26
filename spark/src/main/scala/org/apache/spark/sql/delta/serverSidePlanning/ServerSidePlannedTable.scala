@@ -143,7 +143,7 @@ object ServerSidePlannedTable extends DeltaLogging {
       metadata: ServerSidePlanningMetadata): Option[ServerSidePlannedTable] = {
     try {
       val client = ServerSidePlanningClientFactory.buildClient(spark, metadata)
-      Some(new ServerSidePlannedTable(spark, database, tableName, tableSchema, client))
+      Some(new ServerSidePlannedTable(spark, database, tableName, tableSchema, client, metadata))
     } catch {
       case _: IllegalStateException =>
         // Factory not registered - this shouldn't happen in production but could during testing
@@ -154,9 +154,9 @@ object ServerSidePlannedTable extends DeltaLogging {
   /**
    * Create a ServerSidePlannedTable with an explicit client for testing.
    *
-   * This bypasses the normal production creation path (tryCreate → create) which goes through
+   * This bypasses the normal production creation path (tryCreate -> create) which goes through
    * factory registration and metadata extraction. This lets tests validate the full credential
-   * flow (IRC server → client → Hadoop config → filesystem) without needing Unity Catalog or
+   * flow (IRC server -> client -> Hadoop config -> filesystem) without needing Unity Catalog or
    * going through DeltaCatalog.loadTable().
    *
    * @param spark The SparkSession
@@ -166,10 +166,6 @@ object ServerSidePlannedTable extends DeltaLogging {
    * @param client The planning client to use
    * @param catalogName Catalog name for catalog-specific configuration keys
    *                    (default: spark_catalog)
-   * @param ucUri Unity Catalog URI for credential refresh
-   *              (default: empty for tests)
-   * @param ucToken Unity Catalog token for credential refresh
-   *                (default: empty for tests)
    * @return ServerSidePlannedTable instance
    */
   def forTesting(
@@ -178,11 +174,16 @@ object ServerSidePlannedTable extends DeltaLogging {
       tableName: String,
       tableSchema: StructType,
       client: ServerSidePlanningClient,
-      catalogName: String = "spark_catalog",
-      ucUri: String = "",
-      ucToken: String = ""): ServerSidePlannedTable = {
+      testCatalogName: String = "spark_catalog"): ServerSidePlannedTable = {
+    // Create test metadata inline (can't import TestMetadata from test code)
+    val metadata = new ServerSidePlanningMetadata {
+      override def planningEndpointUri: String = ""
+      override def authToken: Option[String] = None
+      override def catalogName: String = testCatalogName
+      override def tableProperties: Map[String, String] = Map.empty
+    }
     new ServerSidePlannedTable(
-      spark, database, tableName, tableSchema, client, catalogName, ucUri, ucToken)
+      spark, database, tableName, tableSchema, client, metadata)
   }
 
   /**
@@ -212,7 +213,8 @@ class ServerSidePlannedTable(
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient)
+    planningClient: ServerSidePlanningClient,
+    metadata: ServerSidePlanningMetadata)
     extends Table with SupportsRead with DeltaLogging {
 
   // Returns fully qualified name (e.g., "catalog.database.table").
@@ -227,7 +229,8 @@ class ServerSidePlannedTable(
   }
 
   override def newScanBuilder(options: CaseInsensitiveStringMap): ScanBuilder = {
-    new ServerSidePlannedScanBuilder(spark, database, tableName, tableSchema, planningClient)
+    new ServerSidePlannedScanBuilder(
+      spark, database, tableName, tableSchema, planningClient, metadata)
   }
 }
 
@@ -239,10 +242,11 @@ class ServerSidePlannedScanBuilder(
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient) extends ScanBuilder {
+    planningClient: ServerSidePlanningClient,
+    metadata: ServerSidePlanningMetadata) extends ScanBuilder {
 
   override def build(): Scan = {
-    new ServerSidePlannedScan(spark, database, tableName, tableSchema, planningClient)
+    new ServerSidePlannedScan(spark, database, tableName, tableSchema, planningClient, metadata)
   }
 }
 
@@ -254,7 +258,8 @@ class ServerSidePlannedScan(
     database: String,
     tableName: String,
     tableSchema: StructType,
-    planningClient: ServerSidePlanningClient) extends Scan with Batch {
+    planningClient: ServerSidePlanningClient,
+    metadata: ServerSidePlanningMetadata) extends Scan with Batch {
 
   override def readSchema(): StructType = tableSchema
 
@@ -272,7 +277,7 @@ class ServerSidePlannedScan(
 
   override def createReaderFactory(): PartitionReaderFactory = {
     new ServerSidePlannedFilePartitionReaderFactory(
-      spark, tableSchema, scanPlan.credentials, catalogName, ucUri, ucToken)
+      spark, tableSchema, scanPlan.credentials, metadata)
   }
 }
 
@@ -291,17 +296,13 @@ case class ServerSidePlannedFileInputPartition(
  * @param credentials Optional storage credentials from server-side planning response.
  *                    When present, these credentials are injected into the Hadoop configuration
  *                    for S3A file access.
- * @param catalogName Catalog name for catalog-specific configuration keys
- * @param ucUri Unity Catalog URI - injected into Hadoop config for credential refresh
- * @param ucToken Unity Catalog token - injected into Hadoop config for credential refresh
+ * @param metadata Metadata for credential refresh context (catalog name, UC URI/token)
  */
 class ServerSidePlannedFilePartitionReaderFactory(
     spark: SparkSession,
     schema: StructType,
     credentials: Option[StorageCredentials],
-    catalogName: String,
-    ucUri: String,
-    ucToken: String)
+    metadata: ServerSidePlanningMetadata)
     extends PartitionReaderFactory {
 
   import org.apache.spark.util.SerializableConfiguration
@@ -322,8 +323,8 @@ class ServerSidePlannedFilePartitionReaderFactory(
       conf.set("fs.s3a.session.token", creds.sessionToken)
     }
 
-    // Inject Unity Catalog URI and token for future credential refresh on executors
-    // Use catalog-specific configuration keys to support multiple catalogs
+    // Inject credential refresh context (catalog URI/token for UC, no-op for non-UC)
+    // For UC: Sets spark.sql.catalog.$catalogName.uri and .token
     //
     // TODO: Implement credential refresh in cloud-specific filesystem implementations
     // (S3CredentialFileSystem, AzureCredentialFileSystem, GCSCredentialFileSystem).
@@ -333,12 +334,7 @@ class ServerSidePlannedFilePartitionReaderFactory(
     // 3. Use catalogName/ucUri/ucToken from Hadoop config to authenticate refresh request
     // 4. Update Hadoop config with new credentials
     // This will enable long-running queries to continue after initial credentials expire.
-    if (ucUri.nonEmpty) {
-      conf.set(s"spark.sql.catalog.$catalogName.uri", ucUri)
-    }
-    if (ucToken.nonEmpty) {
-      conf.set(s"spark.sql.catalog.$catalogName.token", ucToken)
-    }
+    metadata.injectCredentialRefreshContext(conf)
 
     // After serialization, executors will have access to these credentials for S3 file reads
 
