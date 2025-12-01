@@ -28,10 +28,10 @@ import shadedForDelta.org.apache.iceberg.TableScan;
 import shadedForDelta.org.apache.iceberg.catalog.Catalog;
 import shadedForDelta.org.apache.iceberg.catalog.TableIdentifier;
 import shadedForDelta.org.apache.iceberg.io.CloseableIterable;
+import shadedForDelta.org.apache.iceberg.rest.HTTPRequest;
 import shadedForDelta.org.apache.iceberg.rest.RESTCatalogAdapter;
 import shadedForDelta.org.apache.iceberg.rest.requests.PlanTableScanRequest;
 import shadedForDelta.org.apache.iceberg.rest.requests.PlanTableScanRequestParser;
-import shadedForDelta.org.apache.iceberg.rest.responses.ConfigResponse;
 import shadedForDelta.org.apache.iceberg.rest.responses.ErrorResponse;
 import shadedForDelta.org.apache.iceberg.rest.PlanStatus;
 import shadedForDelta.org.apache.iceberg.rest.responses.PlanTableScanResponse;
@@ -48,6 +48,9 @@ class IcebergRESTCatalogAdapterWithPlanSupport extends RESTCatalogAdapter {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergRESTCatalogAdapterWithPlanSupport.class);
 
   private final Catalog catalog;
+  // Catalog prefix returned in /v1/config that gets inserted into REST paths.
+  // Example: prefix="iceberg" transforms /v1/namespaces/db/tables/t1/plan
+  //          to /v1/iceberg/namespaces/db/tables/t1/plan
   private String catalogPrefix = null;  // null = no prefix (fallback case)
 
   IcebergRESTCatalogAdapterWithPlanSupport(Catalog catalog) {
@@ -57,6 +60,7 @@ class IcebergRESTCatalogAdapterWithPlanSupport extends RESTCatalogAdapter {
 
   /**
    * Set the catalog prefix to be returned by /v1/config endpoint.
+   * The prefix is inserted into REST paths: /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan
    * Used for testing prefix-based endpoint construction.
    * Package-private as this is an implementation detail - tests should use
    * IcebergRESTServer.setCatalogPrefix() instead.
@@ -67,6 +71,14 @@ class IcebergRESTCatalogAdapterWithPlanSupport extends RESTCatalogAdapter {
     this.catalogPrefix = prefix;
   }
 
+  /**
+   * Get the catalog prefix for testing.
+   * Package-private for servlet access.
+   */
+  String getCatalogPrefix() {
+    return this.catalogPrefix;
+  }
+
   @Override
   protected <T extends RESTResponse> T execute(
           HTTPRequest request,
@@ -75,12 +87,6 @@ class IcebergRESTCatalogAdapterWithPlanSupport extends RESTCatalogAdapter {
           Consumer<Map<String, String>> responseHeaders,
           ParserContext parserContext) {
     LOG.debug("Executing request: {} {}", request.method(), request.path());
-
-    // Intercept /v1/config requests to return configurable prefix
-    if (isConfigRequest(request)) {
-      ConfigResponse response = handleConfigRequest();
-      return (T) response;
-    }
 
     // Intercept /plan requests before they reach the base adapter
     if (isPlanTableScanRequest(request)) {
@@ -106,31 +112,6 @@ class IcebergRESTCatalogAdapterWithPlanSupport extends RESTCatalogAdapter {
   private boolean isPlanTableScanRequest(HTTPRequest request) {
     return HTTPRequest.HTTPMethod.POST.equals(request.method()) &&
            request.path().endsWith("/plan");
-  }
-
-  private boolean isConfigRequest(HTTPRequest request) {
-    String path = request.path();
-    boolean isConfig = HTTPRequest.HTTPMethod.GET.equals(request.method()) &&
-           (path.equals("v1/config") || path.equals("/v1/config") || path.endsWith("/v1/config"));
-    if (isConfig) {
-      LOG.info("Config request detected! Path: {}, Method: {}", path, request.method());
-    }
-    return isConfig;
-  }
-
-  private ConfigResponse handleConfigRequest() {
-    LOG.info("Handling /v1/config request, catalogPrefix: {}", catalogPrefix);
-    ConfigResponse.Builder builder = ConfigResponse.builder();
-    if (catalogPrefix != null && !catalogPrefix.isEmpty()) {
-      LOG.info("Adding prefix to config response: {}", catalogPrefix);
-      builder.withOverride("prefix", catalogPrefix);
-    } else {
-      LOG.info("No prefix configured, returning empty overrides");
-    }
-    ConfigResponse response = builder.build();
-    LOG.info("Config response built: defaults={}, overrides={}",
-      response.defaults(), response.overrides());
-    return response;
   }
 
   private TableIdentifier extractTableIdentifier(String path) {

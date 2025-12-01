@@ -200,9 +200,9 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
     )
 
     // Verify endpoint includes prefix from /v1/config response
-    val expectedEndpoint = s"$serverUri/api/2.1/unity-catalog/iceberg/v1/catalogs/test-catalog"
-    assert(metadata.planningEndpointUri.get == expectedEndpoint,
-      s"Expected endpoint to include prefix: ${metadata.planningEndpointUri.get}")
+    val expectedEndpoint = s"$serverUri/api/2.1/unity-catalog/iceberg-rest/v1/catalogs/test-catalog"
+    assert(metadata.planningEndpointUri == expectedEndpoint,
+      s"Expected endpoint to include prefix: ${metadata.planningEndpointUri}")
   }
 
   test("UnityCatalogMetadata falls back when /v1/config returns no prefix") {
@@ -219,9 +219,9 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
     )
 
     // Should use fallback path without prefix
-    val expectedEndpoint = s"$serverUri/api/2.1/unity-catalog/iceberg"
-    assert(metadata.planningEndpointUri.get == expectedEndpoint,
-      s"Expected fallback endpoint without prefix: ${metadata.planningEndpointUri.get}")
+    val expectedEndpoint = s"$serverUri/api/2.1/unity-catalog/iceberg-rest"
+    assert(metadata.planningEndpointUri == expectedEndpoint,
+      s"Expected fallback endpoint without prefix: ${metadata.planningEndpointUri}")
   }
 
 }

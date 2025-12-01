@@ -108,7 +108,7 @@ public class IcebergRESTServer {
     servletContext.addServlet(servletHolder, "/*");
     // Also serve under Unity Catalog path for UnityCatalogMetadata tests
     ServletHolder ucServletHolder = new ServletHolder(servlet);
-    servletContext.addServlet(ucServletHolder, "/api/2.1/unity-catalog/iceberg/*");
+    servletContext.addServlet(ucServletHolder, "/api/2.1/unity-catalog/iceberg-rest/*");
     servletContext.insertHandler(new GzipHandler());
 
     this.httpServer =

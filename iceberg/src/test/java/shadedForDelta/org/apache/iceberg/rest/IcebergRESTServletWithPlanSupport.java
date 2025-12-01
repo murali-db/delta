@@ -28,16 +28,13 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import shadedForDelta.org.apache.iceberg.rest.responses.ConfigResponse;
 import shadedForDelta.org.apache.iceberg.rest.responses.ErrorResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Extension of RESTCatalogServlet that adds support for the /plan endpoint
- * which is not available in the base test servlet.
- *
- * This servlet intercepts requests to /plan and directly invokes the adapter's
- * execute() method, bypassing the route validation in the parent servlet.
+ * Extension of RESTCatalogServlet that adds support for the /plan endpoint.
  */
 public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
   private static final Logger LOG = LoggerFactory.getLogger(IcebergRESTServletWithPlanSupport.class);
@@ -51,18 +48,24 @@ public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
     this.mapper = RESTObjectMapper.mapper();
   }
 
+  /**
+   * Override GET to handle /v1/config requests with catalog prefix.
+   * Note: We handle this at servlet level because UnityCatalogMetadata makes
+   * direct HTTP calls (not through adapter), and the shaded RESTCatalogAdapter
+   * doesn't expose the server-side execute() method we'd need to intercept.
+   */
   @Override
   protected void doGet(HttpServletRequest req, HttpServletResponse resp)
       throws IOException {
 
     String path = req.getPathInfo();
 
-    // Check if this is a /v1/config endpoint request
-    if (path != null && path.endsWith("/v1/config")) {
-      LOG.debug("Custom servlet handling /v1/config request for path: {}", path);
+    // Check if this is a /v1/config request
+    if (path != null && (path.equals("/v1/config") || path.endsWith("/v1/config"))) {
+      LOG.debug("Custom servlet handling /v1/config request");
       handleConfigRequest(req, resp);
     } else {
-      // For all other requests, use standard handling
+      // For all other GET requests, use standard handling
       super.doGet(req, resp);
     }
   }
@@ -86,54 +89,30 @@ public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
   private void handleConfigRequest(HttpServletRequest req, HttpServletResponse resp)
       throws IOException {
     try {
-      // Extract request components
-      String path = req.getPathInfo();
-      // HTTPRequest paths should not start with /, so strip it
-      if (path != null && path.startsWith("/")) {
-        path = path.substring(1);
+      // Build ConfigResponse with prefix if adapter has one set
+      ConfigResponse.Builder builder = ConfigResponse.builder();
+
+      // If adapter is our custom type, get the prefix and add it to overrides
+      if (adapter instanceof IcebergRESTCatalogAdapterWithPlanSupport) {
+        IcebergRESTCatalogAdapterWithPlanSupport customAdapter =
+            (IcebergRESTCatalogAdapterWithPlanSupport) adapter;
+        String prefix = customAdapter.getCatalogPrefix();
+        if (prefix != null && !prefix.isEmpty()) {
+          LOG.info("Adding prefix to /v1/config response: {}", prefix);
+          builder.withOverride("prefix", prefix);
+        }
       }
-      Map<String, String> headers = extractHeaders(req);
-      Map<String, String> queryParams = extractQueryParams(req);
 
-      LOG.debug("Config request - path: {}", path);
+      ConfigResponse config = builder.build();
 
-      // Build HTTPRequest for GET /v1/config
-      HTTPRequest httpRequest = adapter.buildRequest(
-          HTTPRequest.HTTPMethod.GET,
-          path,
-          queryParams,
-          headers,
-          null  // No body for GET requests
-      );
-
-      // Set up response handling
+      // Write JSON response
       resp.setStatus(200);
       resp.setContentType("application/json");
-
-      // Execute the request through the adapter
-      RESTResponse response = adapter.execute(
-          httpRequest,
-          RESTResponse.class,
-          error -> handleError(resp, error),
-          responseHeaders -> responseHeaders.forEach((k, v) -> resp.setHeader(k, v))
-      );
-
-      // Write response
-      if (response != null) {
-        PrintWriter writer = resp.getWriter();
-        mapper.writeValue(writer, response);
-        writer.flush();
-      }
+      mapper.writeValue(resp.getWriter(), config);
 
     } catch (Exception e) {
       LOG.error("Error handling /v1/config request: {}", e.getMessage(), e);
       resp.setStatus(500);
-      ErrorResponse error = ErrorResponse.builder()
-          .responseCode(500)
-          .withType("InternalServerError")
-          .withMessage("Failed to process config request: " + e.getMessage())
-          .build();
-      mapper.writeValue(resp.getWriter(), error);
     }
   }
 

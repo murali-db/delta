@@ -24,13 +24,9 @@ case class TestMetadata(
     catalogName: String,
     endpointUri: String,
     token: String,
-    ucUri: String = "",
-    ucToken: String = "",
     props: Map[String, String] = Map.empty) extends ServerSidePlanningMetadata {
 
-  override def planningEndpointUri: Option[String] = Some(endpointUri)
+  override def planningEndpointUri: String = endpointUri
   override def authToken: Option[String] = Some(token)
-  override def unityCatalogUri: Option[String] = if (ucUri.nonEmpty) Some(ucUri) else None
-  override def unityCatalogToken: Option[String] = if (ucToken.nonEmpty) Some(ucToken) else None
   override def tableProperties: Map[String, String] = props
 }

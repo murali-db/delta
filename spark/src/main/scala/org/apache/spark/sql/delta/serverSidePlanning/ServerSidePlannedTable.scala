@@ -105,7 +105,7 @@ object ServerSidePlannedTable extends DeltaLogging {
       val namespace = ident.namespace().mkString(".")
       val tableName = ident.name()
 
-      // Create metadata from table - this reads config once and extracts all needed info
+      // Create metadata from table
       val metadata = ServerSidePlanningMetadata.fromTable(table, spark, ident, isUnityCatalog)
 
       // Try to create ServerSidePlannedTable with server-side planning
@@ -114,8 +114,9 @@ object ServerSidePlannedTable extends DeltaLogging {
           Some(plannedTable)
         case None =>
           // Factory not registered - fall through to normal path
-          logWarning(s"Server-side planning not available for catalog ${metadata.catalogName}. " +
-            "Falling back to normal table loading.")
+          logWarning(
+            s"Server-side planning not available for catalog ${metadata.catalogName}. " +
+              "Falling back to normal table loading.")
           None
       }
     } else {
@@ -141,7 +142,7 @@ object ServerSidePlannedTable extends DeltaLogging {
       tableSchema: StructType,
       metadata: ServerSidePlanningMetadata): Option[ServerSidePlannedTable] = {
     try {
-      val client = ServerSidePlanningClientFactory.buildFromMetadata(spark, metadata)
+      val client = ServerSidePlanningClientFactory.buildClient(spark, metadata)
       Some(new ServerSidePlannedTable(spark, database, tableName, tableSchema, client))
     } catch {
       case _: IllegalStateException =>

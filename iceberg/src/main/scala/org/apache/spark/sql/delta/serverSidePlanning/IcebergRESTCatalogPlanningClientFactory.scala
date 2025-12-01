@@ -23,15 +23,11 @@ import org.apache.spark.sql.SparkSession
  * Lives in the iceberg module alongside the implementation.
  */
 class IcebergRESTCatalogPlanningClientFactory extends ServerSidePlanningClientFactory {
-  override def buildFromMetadata(
+  override def buildClient(
       spark: SparkSession,
       metadata: ServerSidePlanningMetadata): ServerSidePlanningClient = {
 
-    val endpointUri = metadata.planningEndpointUri.getOrElse {
-      throw new IllegalStateException(
-        s"Planning endpoint URI not available for catalog '${metadata.catalogName}'")
-    }
-
+    val endpointUri = metadata.planningEndpointUri
     val token = metadata.authToken.getOrElse("")
 
     new IcebergRESTCatalogPlanningClient(endpointUri, token)

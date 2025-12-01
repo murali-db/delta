@@ -43,16 +43,12 @@ case class UnityCatalogMetadata(
     ucToken: String,
     tableProps: Map[String, String]) extends ServerSidePlanningMetadata {
 
-  override def planningEndpointUri: Option[String] = {
+  override def planningEndpointUri: String = {
     // Construct IRC REST endpoint from UC URI
-    Some(constructPlanEndpoint(ucUri))
+    constructPlanEndpoint(ucUri)
   }
 
   override def authToken: Option[String] = Some(ucToken)
-
-  override def unityCatalogUri: Option[String] = Some(ucUri)
-
-  override def unityCatalogToken: Option[String] = Some(ucToken)
 
   override def tableProperties: Map[String, String] = tableProps
 
@@ -74,7 +70,7 @@ case class UnityCatalogMetadata(
    */
   private def fetchCatalogConfig(): Option[CatalogConfigResponse] = {
     try {
-      val icebergRestBase = s"$baseUri/api/2.1/unity-catalog/iceberg"
+      val icebergRestBase = s"$baseUri/api/2.1/unity-catalog/iceberg-rest"
       val configUri = s"$icebergRestBase/v1/config"
       val httpClient = HttpClientBuilder.create().build()
       try {
@@ -112,9 +108,9 @@ case class UnityCatalogMetadata(
    * 4. If prefix is missing or config call fails, uses simple path: {icebergRestBase}
    *
    * Examples:
-   * - Without prefix: https://workspace.databricks.com/api/2.1/unity-catalog/iceberg
+   * - Without prefix: https://workspace.databricks.com/api/2.1/unity-catalog/iceberg-rest
    * - With prefix:
-   *   https://workspace.databricks.com/api/2.1/unity-catalog/iceberg/v1/catalogs/my-catalog
+   *   https://workspace.databricks.com/api/2.1/unity-catalog/iceberg-rest/v1/catalogs/my-catalog
    *
    * See: https://iceberg.apache.org/rest-catalog-spec/
    *
@@ -122,7 +118,7 @@ case class UnityCatalogMetadata(
    */
   private def constructPlanEndpoint(ucUri: String): String = {
     val base = baseUri
-    val icebergRestBase = s"$base/api/2.1/unity-catalog/iceberg"
+    val icebergRestBase = s"$base/api/2.1/unity-catalog/iceberg-rest"
 
     // Try to get prefix from config
     val prefix = catalogConfig.flatMap(_.overrides.get("prefix"))

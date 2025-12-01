@@ -65,7 +65,7 @@ trait ServerSidePlanningClientFactory {
    * @param metadata Metadata extracted from loadTable response
    * @return A ServerSidePlanningClient configured with the metadata
    */
-  def buildFromMetadata(
+  def buildClient(
       spark: SparkSession,
       metadata: ServerSidePlanningMetadata): ServerSidePlanningClient
 }
@@ -109,9 +109,9 @@ object ServerSidePlanningClientFactory {
   /**
    * Convenience method to create a client from metadata using the registered factory.
    */
-  def buildFromMetadata(
+  def buildClient(
       spark: SparkSession,
       metadata: ServerSidePlanningMetadata): ServerSidePlanningClient = {
-    getFactory().buildFromMetadata(spark, metadata)
+    getFactory().buildClient(spark, metadata)
   }
 }

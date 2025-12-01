@@ -97,7 +97,7 @@ class TestServerSidePlanningClient(spark: SparkSession) extends ServerSidePlanni
  * Factory for creating TestServerSidePlanningClient instances.
  */
 class TestServerSidePlanningClientFactory extends ServerSidePlanningClientFactory {
-  override def buildFromMetadata(
+  override def buildClient(
       spark: SparkSession,
       metadata: ServerSidePlanningMetadata): ServerSidePlanningClient = {
     new TestServerSidePlanningClient(spark)
