@@ -161,6 +161,18 @@ public class IcebergRESTServer {
     }
   }
 
+  /**
+   * Configure test credentials to be returned in /plan responses.
+   * Used for testing credential injection flow.
+   */
+  public void setTestCredentials(String accessKey, String secretKey, String sessionToken) {
+    if (adapter != null) {
+      adapter.setTestCredentials(accessKey, secretKey, sessionToken);
+    } else {
+      throw new IllegalStateException("Server must be started before setting test credentials");
+    }
+  }
+
   public static void main(String[] args) throws Exception {
     new IcebergRESTServer().start(true);
   }
