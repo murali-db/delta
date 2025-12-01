@@ -52,6 +52,16 @@ case class UnityCatalogMetadata(
 
   override def tableProperties: Map[String, String] = tableProps
 
+  override def injectCredentialRefreshContext(conf: org.apache.hadoop.conf.Configuration): Unit = {
+    // Inject Unity Catalog URI and token for credential refresh on executors
+    if (ucUri.nonEmpty) {
+      conf.set(s"spark.sql.catalog.$catalogName.uri", ucUri)
+    }
+    if (ucToken.nonEmpty) {
+      conf.set(s"spark.sql.catalog.$catalogName.token", ucToken)
+    }
+  }
+
   /**
    * Base URI with trailing slash removed for consistent URL construction.
    */

@@ -29,8 +29,15 @@ import org.apache.spark.sql.functions.input_file_name
  * a real server that can do server-side planning.
  *
  * This implementation works with any Spark-readable table format (Delta, Parquet, Iceberg, etc.)
+ *
+ * @param spark The SparkSession
+ * @param credentials Optional credentials to include in ScanPlan responses
+ * @param pathRewriteScheme Optional scheme (s3a, abfs, gs) to rewrite file paths for testing
  */
-class TestServerSidePlanningClient(spark: SparkSession) extends ServerSidePlanningClient {
+class TestServerSidePlanningClient(
+    spark: SparkSession,
+    credentials: Option[StorageCredentials] = None,
+    pathRewriteScheme: Option[String] = None) extends ServerSidePlanningClient {
 
   override def planScan(database: String, table: String): ScanPlan = {
     val fullTableName = s"$database.$table"
@@ -63,14 +70,22 @@ class TestServerSidePlanningClient(spark: SparkSession) extends ServerSidePlanni
         val fs = path.getFileSystem(hadoopConf)
         val fileStatus = fs.getFileStatus(path)
 
+        // Optionally rewrite file:// paths to cloud storage scheme (s3a://, abfs://, gs://)
+        // for testing credential injection
+        val rewrittenPath = pathRewriteScheme match {
+          case Some(scheme) if decodedPath.startsWith("file:") =>
+            decodedPath.replace("file:", s"$scheme:")
+          case _ => decodedPath
+        }
+
         ScanFile(
-          filePath = decodedPath,
+          filePath = rewrittenPath,
           fileSizeInBytes = fileStatus.getLen,
           fileFormat = getFileFormat(path)
         )
       }.toSeq
 
-      ScanPlan(files = files)
+      ScanPlan(files = files, credentials = credentials)
     } finally {
       // Restore original config value
       originalConfigValue match {
@@ -101,5 +116,23 @@ class TestServerSidePlanningClientFactory extends ServerSidePlanningClientFactor
       spark: SparkSession,
       metadata: ServerSidePlanningMetadata): ServerSidePlanningClient = {
     new TestServerSidePlanningClient(spark)
+  }
+}
+
+/**
+ * Factory for creating TestServerSidePlanningClient instances with credentials.
+ * Used for testing credential injection.
+ *
+ * @param credentials Credentials to include in ScanPlan responses
+ * @param pathRewriteScheme Optional scheme to rewrite file paths (e.g., "s3a" for S3 testing)
+ */
+class TestServerSidePlanningClientFactoryWithCredentials(
+    credentials: Option[StorageCredentials],
+    pathRewriteScheme: Option[String] = None) extends ServerSidePlanningClientFactory {
+
+  override def buildClient(
+      spark: SparkSession,
+      metadata: ServerSidePlanningMetadata): ServerSidePlanningClient = {
+    new TestServerSidePlanningClient(spark, credentials, pathRewriteScheme)
   }
 }
