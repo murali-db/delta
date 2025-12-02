@@ -411,4 +411,124 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       }
     }
   }
+
+  test("projection pushdown - SELECT specific columns") {
+    withTempDir { dir =>
+      // Create test table with multiple columns
+      spark.range(10)
+        .selectExpr("id", "id * 2 as double_id", "CAST(id AS STRING) as id_str")
+        .write
+        .format("delta")
+        .save(dir.getAbsolutePath)
+
+      sql(s"CREATE TABLE test_db.projection_test USING DELTA LOCATION '${dir.getAbsolutePath}'")
+
+      val originalConfig = spark.conf.getOption(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+      try {
+        spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "true")
+        ServerSidePlanningClientFactory.setFactory(new ProjectionCapturingTestClientFactory())
+        ProjectionCapturingTestClient.clearCapturedProjection()
+
+        // Execute query selecting only 2 of 3 columns
+        val result = sql("SELECT id, id_str FROM test_db.projection_test").collect()
+
+        // Verify results are correct
+        assert(result.length == 10)
+        assert(result(0).length == 2)  // Only 2 columns returned
+
+        // Verify projection was pushed
+        val capturedProjection = ProjectionCapturingTestClient.getCapturedProjection
+        assert(capturedProjection.isDefined, "Projection should have been pushed")
+
+        val schema = capturedProjection.get
+        assert(schema.fields.length == 2, s"Expected 2 columns but got ${schema.fields.length}")
+        assert(schema.fieldNames.toSeq == Seq("id", "id_str"))
+      } finally {
+        ProjectionCapturingTestClient.clearCapturedProjection()
+        ServerSidePlanningClientFactory.clearFactory()
+        originalConfig match {
+          case Some(value) => spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, value)
+          case None => spark.conf.unset(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+        }
+      }
+    }
+  }
+
+  test("projection pushdown - SELECT * reads all columns") {
+    withTempDir { dir =>
+      // Create test table with multiple columns
+      spark.range(5)
+        .selectExpr("id", "id * 2 as double_id", "CAST(id AS STRING) as id_str")
+        .write
+        .format("delta")
+        .save(dir.getAbsolutePath)
+
+      sql(s"CREATE TABLE test_db.projection_all USING DELTA LOCATION '${dir.getAbsolutePath}'")
+
+      val originalConfig = spark.conf.getOption(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+      try {
+        spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "true")
+        ServerSidePlanningClientFactory.setFactory(new ProjectionCapturingTestClientFactory())
+        ProjectionCapturingTestClient.clearCapturedProjection()
+
+        // Execute SELECT * query
+        val result = sql("SELECT * FROM test_db.projection_all").collect()
+
+        // Verify results are correct
+        assert(result.length == 5)
+        assert(result(0).length == 3)  // All 3 columns returned
+
+        // Verify no projection was pushed (None means full table scan)
+        val capturedProjection = ProjectionCapturingTestClient.getCapturedProjection
+        assert(capturedProjection.isEmpty,
+          s"Expected no projection (None) for SELECT * but got ${capturedProjection}")
+      } finally {
+        ProjectionCapturingTestClient.clearCapturedProjection()
+        ServerSidePlanningClientFactory.clearFactory()
+        originalConfig match {
+          case Some(value) => spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, value)
+          case None => spark.conf.unset(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+        }
+      }
+    }
+  }
+
+  test("projection pushdown - combined with filter") {
+    withTempDir { dir =>
+      // Create test table
+      spark.range(20)
+        .selectExpr("id", "id * 2 as double_id", "CAST(id AS STRING) as id_str")
+        .write
+        .format("delta")
+        .save(dir.getAbsolutePath)
+
+      sql(s"CREATE TABLE test_db.proj_filter USING DELTA LOCATION '${dir.getAbsolutePath}'")
+
+      val originalConfig = spark.conf.getOption(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+      try {
+        spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "true")
+        ServerSidePlanningClientFactory.setFactory(new ProjectionCapturingTestClientFactory())
+        ProjectionCapturingTestClient.clearCapturedProjection()
+
+        // Execute query with both projection and filter
+        val result = sql("SELECT id, id_str FROM test_db.proj_filter WHERE id > 10").collect()
+
+        // Verify results
+        assert(result.length == 9)  // IDs 11-19
+        assert(result(0).length == 2)  // Only 2 columns
+
+        // Verify both projection and filter were pushed
+        val capturedProjection = ProjectionCapturingTestClient.getCapturedProjection
+        assert(capturedProjection.isDefined, "Projection should have been pushed")
+        assert(capturedProjection.get.fields.length == 2)
+      } finally {
+        ProjectionCapturingTestClient.clearCapturedProjection()
+        ServerSidePlanningClientFactory.clearFactory()
+        originalConfig match {
+          case Some(value) => spark.conf.set(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, value)
+          case None => spark.conf.unset(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key)
+        }
+      }
+    }
+  }
 }

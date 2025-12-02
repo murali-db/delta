@@ -183,3 +183,46 @@ class FilterCapturingTestClientFactory extends ServerSidePlanningClientFactory {
     new FilterCapturingTestClient(spark)
   }
 }
+
+/**
+ * Test client that captures the projection passed to planScan() for verification.
+ * Stores the captured projection in a thread-local variable accessible via companion object.
+ *
+ * @param spark The SparkSession
+ */
+class ProjectionCapturingTestClient(spark: SparkSession) extends ServerSidePlanningClient {
+  override def planScan(
+      database: String,
+      table: String,
+      filter: Option[org.apache.spark.sql.sources.Filter] = None,
+      projection: Option[org.apache.spark.sql.types.StructType] = None): ScanPlan = {
+    // Capture the projection for test verification
+    ProjectionCapturingTestClient.capturedProjection.set(projection)
+
+    // Delegate to TestServerSidePlanningClient for actual file discovery
+    new TestServerSidePlanningClient(spark).planScan(database, table, filter, projection)
+  }
+}
+
+object ProjectionCapturingTestClient {
+  private val capturedProjection = new ThreadLocal[Option[org.apache.spark.sql.types.StructType]]()
+
+  def getCapturedProjection: Option[org.apache.spark.sql.types.StructType] = {
+    capturedProjection.get()
+  }
+
+  def clearCapturedProjection(): Unit = {
+    capturedProjection.remove()
+  }
+}
+
+/**
+ * Factory for creating ProjectionCapturingTestClient instances.
+ */
+class ProjectionCapturingTestClientFactory extends ServerSidePlanningClientFactory {
+  override def buildClient(
+      spark: SparkSession,
+      metadata: ServerSidePlanningMetadata): ServerSidePlanningClient = {
+    new ProjectionCapturingTestClient(spark)
+  }
+}
