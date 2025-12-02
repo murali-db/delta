@@ -238,6 +238,7 @@ class ServerSidePlannedTable(
 /**
  * ScanBuilder that uses ServerSidePlanningClient to plan the scan.
  * Implements SupportsPushDownFilters to enable WHERE clause pushdown to the server.
+ * Implements SupportsPushDownRequiredColumns to enable column pruning (projection pushdown).
  */
 class ServerSidePlannedScanBuilder(
     spark: SparkSession,
@@ -246,10 +247,13 @@ class ServerSidePlannedScanBuilder(
     tableSchema: StructType,
     planningClient: ServerSidePlanningClient,
     metadata: ServerSidePlanningMetadata)
-  extends ScanBuilder with SupportsPushDownFilters {
+  extends ScanBuilder with SupportsPushDownFilters with SupportsPushDownRequiredColumns {
 
   // Filters that have been pushed down and will be sent to the server
   private var _pushedFilters: Array[Filter] = Array.empty
+
+  // Required schema (columns to read). Defaults to full table schema.
+  private var _requiredSchema: StructType = tableSchema
 
   override def pushFilters(filters: Array[Filter]): Array[Filter] = {
     // Accept all filters for pushdown. The SparkToIcebergExpressionConverter will handle
@@ -261,9 +265,14 @@ class ServerSidePlannedScanBuilder(
 
   override def pushedFilters(): Array[Filter] = _pushedFilters
 
+  override def pruneColumns(requiredSchema: StructType): Unit = {
+    _requiredSchema = requiredSchema
+  }
+
   override def build(): Scan = {
     new ServerSidePlannedScan(
-      spark, database, tableName, tableSchema, planningClient, metadata, _pushedFilters)
+      spark, database, tableName, tableSchema, planningClient, metadata,
+      _pushedFilters, _requiredSchema)
   }
 }
 
@@ -277,9 +286,10 @@ class ServerSidePlannedScan(
     tableSchema: StructType,
     planningClient: ServerSidePlanningClient,
     metadata: ServerSidePlanningMetadata,
-    pushedFilters: Array[Filter]) extends Scan with Batch {
+    pushedFilters: Array[Filter],
+    requiredSchema: StructType) extends Scan with Batch {
 
-  override def readSchema(): StructType = tableSchema
+  override def readSchema(): StructType = requiredSchema
 
   override def toBatch: Batch = this
 
@@ -297,7 +307,17 @@ class ServerSidePlannedScan(
     }
   }
 
-  private val scanPlan = planningClient.planScan(database, tableName, combinedFilter)
+  // Pass projection to server if it differs from full table schema.
+  // This enables the catalog to optimize file listing for large tables.
+  private val projection: Option[StructType] = {
+    if (requiredSchema == tableSchema) {
+      None  // Full table scan, no projection needed
+    } else {
+      Some(requiredSchema)
+    }
+  }
+
+  private val scanPlan = planningClient.planScan(database, tableName, combinedFilter, projection)
 
   override def planInputPartitions(): Array[InputPartition] = {
     // Convert each file to an InputPartition
@@ -308,7 +328,7 @@ class ServerSidePlannedScan(
 
   override def createReaderFactory(): PartitionReaderFactory = {
     new ServerSidePlannedFilePartitionReaderFactory(
-      spark, tableSchema, scanPlan.credentials, metadata)
+      spark, tableSchema, requiredSchema, scanPlan.credentials, metadata)
   }
 }
 
@@ -324,6 +344,8 @@ case class ServerSidePlannedFileInputPartition(
  * Factory for creating PartitionReaders that read server-side planned files.
  * Builds reader functions on the driver for Parquet files.
  *
+ * @param dataSchema The full table schema (all columns in the file)
+ * @param requiredSchema The required schema (columns to read after projection pushdown)
  * @param credentials Optional storage credentials from server-side planning response.
  *                    When present, these credentials are injected into the Hadoop configuration
  *                    for S3A file access.
@@ -331,7 +353,8 @@ case class ServerSidePlannedFileInputPartition(
  */
 class ServerSidePlannedFilePartitionReaderFactory(
     spark: SparkSession,
-    schema: StructType,
+    dataSchema: StructType,
+    requiredSchema: StructType,
     credentials: Option[StorageCredentials],
     metadata: ServerSidePlanningMetadata)
     extends PartitionReaderFactory {
@@ -375,11 +398,13 @@ class ServerSidePlannedFilePartitionReaderFactory(
 
   // Pre-build reader function for Parquet on the driver
   // This function will be serialized and sent to executors
+  // dataSchema: All columns in the file (full table schema)
+  // requiredSchema: Columns to actually read (after projection pushdown)
   private val parquetReaderBuilder = new ParquetFileFormat().buildReaderWithPartitionValues(
     sparkSession = spark,
-    dataSchema = schema,
+    dataSchema = dataSchema,
     partitionSchema = StructType(Nil),
-    requiredSchema = schema,
+    requiredSchema = requiredSchema,
     filters = Seq.empty,
     options = Map(
       FileFormat.OPTION_RETURNING_BATCH -> "false"
