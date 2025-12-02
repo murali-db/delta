@@ -139,3 +139,45 @@ class TestServerSidePlanningClientFactoryWithCredentials(
     new TestServerSidePlanningClient(spark, credentials, pathRewriteScheme)
   }
 }
+
+/**
+ * Test client that captures the filter passed to planScan() for verification.
+ * Stores the captured filter in a thread-local variable accessible via companion object.
+ *
+ * @param spark The SparkSession
+ */
+class FilterCapturingTestClient(spark: SparkSession) extends ServerSidePlanningClient {
+  override def planScan(
+      database: String,
+      table: String,
+      filter: Option[org.apache.spark.sql.sources.Filter] = None): ScanPlan = {
+    // Capture the filter for test verification
+    FilterCapturingTestClient.capturedFilter.set(filter)
+
+    // Delegate to TestServerSidePlanningClient for actual file discovery
+    new TestServerSidePlanningClient(spark).planScan(database, table, filter)
+  }
+}
+
+object FilterCapturingTestClient {
+  private val capturedFilter = new ThreadLocal[Option[org.apache.spark.sql.sources.Filter]]()
+
+  def getCapturedFilter: Option[org.apache.spark.sql.sources.Filter] = {
+    capturedFilter.get()
+  }
+
+  def clearCapturedFilter(): Unit = {
+    capturedFilter.remove()
+  }
+}
+
+/**
+ * Factory for creating FilterCapturingTestClient instances.
+ */
+class FilterCapturingTestClientFactory extends ServerSidePlanningClientFactory {
+  override def buildClient(
+      spark: SparkSession,
+      metadata: ServerSidePlanningMetadata): ServerSidePlanningClient = {
+    new FilterCapturingTestClient(spark)
+  }
+}

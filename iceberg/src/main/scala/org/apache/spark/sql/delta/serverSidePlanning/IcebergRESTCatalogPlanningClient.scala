@@ -89,13 +89,14 @@ class IcebergRESTCatalogPlanningClient(
     // in the Iceberg REST API spec. Time-travel queries are not yet supported.
     val builder = new PlanTableScanRequest.Builder().withSnapshotId(CURRENT_SNAPSHOT_ID)
 
-    // Filter parameter infrastructure is present but not yet wired up. Will be enabled in
-    // PR19 once SparkToIcebergExpressionConverter is implemented to convert Spark Filter
-    // to Iceberg Expression format.
-    // filter.foreach { sparkFilter =>
-    //   val icebergExpr = SparkToIcebergExpressionConverter.convert(sparkFilter)
-    //   builder.withFilter(icebergExpr)
-    // }
+    // Convert Spark Filter to Iceberg Expression and add to request if filter is present.
+    // Schema parameter is empty for now (reserved for future type conversions).
+    filter.foreach { sparkFilter =>
+      val schema = org.apache.spark.sql.types.StructType(Seq.empty)
+      SparkToIcebergExpressionConverter.convert(sparkFilter, schema).foreach { icebergExpr =>
+        builder.withFilter(icebergExpr)
+      }
+    }
 
     val request = builder.build()
 
