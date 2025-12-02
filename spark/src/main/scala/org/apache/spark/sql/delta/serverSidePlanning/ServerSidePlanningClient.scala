@@ -68,6 +68,14 @@ case class ScanPlan(
  * as a private implementation detail. See `SparkToIcebergExpressionConverter` in the iceberg
  * module as an example.
  *
+ * Projection Conversion Pattern:
+ * Similar to filters, this interface uses Spark's standard `org.apache.spark.sql.types.StructType`
+ * as the universal representation for projection pushdown. Each catalog implementation converts
+ * this to their own native schema format:
+ *  - Iceberg catalogs: Convert Spark StructType to Iceberg Schema (for REST API)
+ *  - Unity Catalog: Convert Spark StructType to UC's schema format
+ *  - Other catalogs: Implement their own conversion logic as needed
+ *
  * Note: Server-side planning only supports reading the current snapshot.
  */
 trait ServerSidePlanningClient {
@@ -79,12 +87,16 @@ trait ServerSidePlanningClient {
    * @param filter Optional filter expression to push down to server (Spark Filter format).
    *               Each catalog implementation is responsible for converting this to their
    *               native filter format (e.g., Iceberg Expression, UC filter format, etc.)
+   * @param projection Optional schema representing required columns (Spark StructType format).
+   *                   Each catalog implementation is responsible for converting this to their
+   *                   native schema format (e.g., Iceberg Schema, UC schema format, etc.)
    * @return ScanPlan containing files to read
    */
   def planScan(
       database: String,
       table: String,
-      filter: Option[org.apache.spark.sql.sources.Filter] = None): ScanPlan
+      filter: Option[org.apache.spark.sql.sources.Filter] = None,
+      projection: Option[org.apache.spark.sql.types.StructType] = None): ScanPlan
 }
 
 /**
