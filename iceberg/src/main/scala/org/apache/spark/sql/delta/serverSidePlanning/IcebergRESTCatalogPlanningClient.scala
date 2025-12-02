@@ -74,7 +74,8 @@ class IcebergRESTCatalogPlanningClient(
   override def planScan(
       database: String,
       table: String,
-      filter: Option[org.apache.spark.sql.sources.Filter] = None): ScanPlan = {
+      filter: Option[org.apache.spark.sql.sources.Filter] = None,
+      projection: Option[org.apache.spark.sql.types.StructType] = None): ScanPlan = {
     // TODO: Follow Iceberg REST catalog spec for proper path construction. Per the spec, clients
     // should first call GET /v1/config to retrieve catalog configuration including the optional
     // "prefix" parameter in the overrides section (e.g., overrides.prefix). This prefix should

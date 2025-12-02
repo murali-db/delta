@@ -42,7 +42,8 @@ class TestServerSidePlanningClient(
   override def planScan(
       database: String,
       table: String,
-      filter: Option[org.apache.spark.sql.sources.Filter] = None): ScanPlan = {
+      filter: Option[org.apache.spark.sql.sources.Filter] = None,
+      projection: Option[org.apache.spark.sql.types.StructType] = None): ScanPlan = {
     val fullTableName = s"$database.$table"
 
     // Temporarily disable server-side planning to avoid infinite recursion
@@ -150,12 +151,13 @@ class FilterCapturingTestClient(spark: SparkSession) extends ServerSidePlanningC
   override def planScan(
       database: String,
       table: String,
-      filter: Option[org.apache.spark.sql.sources.Filter] = None): ScanPlan = {
+      filter: Option[org.apache.spark.sql.sources.Filter] = None,
+      projection: Option[org.apache.spark.sql.types.StructType] = None): ScanPlan = {
     // Capture the filter for test verification
     FilterCapturingTestClient.capturedFilter.set(filter)
 
     // Delegate to TestServerSidePlanningClient for actual file discovery
-    new TestServerSidePlanningClient(spark).planScan(database, table, filter)
+    new TestServerSidePlanningClient(spark).planScan(database, table, filter, projection)
   }
 }
 
