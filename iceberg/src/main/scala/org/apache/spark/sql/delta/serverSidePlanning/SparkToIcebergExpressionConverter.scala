@@ -21,8 +21,24 @@ import org.apache.spark.sql.types.StructType
 import shadedForDelta.org.apache.iceberg.expressions.{Expression, Expressions}
 
 /**
- * Converts Spark Filter expressions to Iceberg Expression objects for server-side planning.
+ * ICEBERG-SPECIFIC IMPLEMENTATION DETAIL - NOT SHARED INFRASTRUCTURE
  *
+ * Converts Spark Filter expressions to Iceberg Expression objects for Iceberg REST catalog
+ * integration. This converter is specific to Iceberg and should NOT be used as a generic
+ * filter conversion utility for other catalog implementations.
+ *
+ * Catalog-Agnostic Design Pattern:
+ * The `ServerSidePlanningClient` interface (in delta-spark module) uses Spark's standard
+ * `org.apache.spark.sql.sources.Filter` as the universal representation. Each catalog
+ * implementation provides its own converter to translate Spark Filters to their native format:
+ *  - Iceberg catalogs: Use this converter (Spark Filter to Iceberg Expression)
+ *  - Unity Catalog: Should implement UC-specific converter (Spark Filter to UC format)
+ *  - Other catalogs: Implement their own conversion logic as needed
+ *
+ * This object is marked `private[serverSidePlanning]` to emphasize that it's an internal
+ * implementation detail of the Iceberg integration, not shared infrastructure.
+ *
+ * Implementation Details:
  * This is a pure utility class with no side effects. All methods are thread-safe and stateless.
  *
  * Supported filters:
@@ -37,12 +53,12 @@ import shadedForDelta.org.apache.iceberg.expressions.{Expression, Expressions}
  *   val sparkFilter = EqualTo("id", 5)
  *   val schema = StructType(...)
  *   SparkToIcebergExpressionConverter.convert(sparkFilter, schema) match {
- *     case Some(icebergExpr) => // Use expression
- *     case None => // Filter not supported
+ *     case Some(icebergExpr) => // Use expression with Iceberg REST API
+ *     case None => // Filter not supported for Iceberg pushdown
  *   }
  * }}}
  */
-object SparkToIcebergExpressionConverter {
+private[serverSidePlanning] object SparkToIcebergExpressionConverter {
 
   /**
    * Convert a Spark Filter to an Iceberg Expression.
