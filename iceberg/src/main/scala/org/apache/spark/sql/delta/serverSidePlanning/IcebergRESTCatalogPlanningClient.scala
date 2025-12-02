@@ -71,7 +71,10 @@ class IcebergRESTCatalogPlanningClient(
     .setConnectionTimeToLive(30, java.util.concurrent.TimeUnit.SECONDS)
     .build()
 
-  override def planScan(database: String, table: String): ScanPlan = {
+  override def planScan(
+      database: String,
+      table: String,
+      filter: Option[org.apache.spark.sql.sources.Filter] = None): ScanPlan = {
     // TODO: Follow Iceberg REST catalog spec for proper path construction. Per the spec, clients
     // should first call GET /v1/config to retrieve catalog configuration including the optional
     // "prefix" parameter in the overrides section (e.g., overrides.prefix). This prefix should
@@ -84,7 +87,17 @@ class IcebergRESTCatalogPlanningClient(
 
     // Request planning for current snapshot. snapshotId = 0 means "use current snapshot"
     // in the Iceberg REST API spec. Time-travel queries are not yet supported.
-    val request = new PlanTableScanRequest.Builder().withSnapshotId(CURRENT_SNAPSHOT_ID).build()
+    val builder = new PlanTableScanRequest.Builder().withSnapshotId(CURRENT_SNAPSHOT_ID)
+
+    // Filter parameter infrastructure is present but not yet wired up. Will be enabled in
+    // PR19 once SparkToIcebergExpressionConverter is implemented to convert Spark Filter
+    // to Iceberg Expression format.
+    // filter.foreach { sparkFilter =>
+    //   val icebergExpr = SparkToIcebergExpressionConverter.convert(sparkFilter)
+    //   builder.withFilter(icebergExpr)
+    // }
+
+    val request = builder.build()
 
     val requestJson = PlanTableScanRequestParser.toJson(request)
     val httpPost = new HttpPost(planTableScanUri)

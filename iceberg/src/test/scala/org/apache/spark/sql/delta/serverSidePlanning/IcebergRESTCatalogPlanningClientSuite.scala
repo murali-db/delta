@@ -75,7 +75,7 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
     withTempTable("testTable") { table =>
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
       try {
-        val scanPlan = client.planScan(defaultNamespace.toString, "testTable")
+        val scanPlan = client.planScan(defaultNamespace.toString, "testTable", None)
         assert(scanPlan != null, "Scan plan should not be null")
         assert(scanPlan.files != null, "Scan plan files should not be null")
         assert(scanPlan.files.isEmpty,
@@ -119,7 +119,7 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
 
       val client = new IcebergRESTCatalogPlanningClient(serverUri, null)
       try {
-        val scanPlan = client.planScan(defaultNamespace.toString, "tableWithData")
+        val scanPlan = client.planScan(defaultNamespace.toString, "tableWithData", None)
         assert(scanPlan != null, "Scan plan should not be null")
         assert(scanPlan.files != null, "Scan plan files should not be null")
         assert(scanPlan.files.length == 2, s"Expected 2 files but got ${scanPlan.files.length}")
