@@ -86,6 +86,10 @@ public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
     }
   }
 
+  /**
+   * Test helper for Iceberg REST /v1/config endpoint that returns optional catalog
+   * prefix, following the Iceberg REST catalog spec pattern.
+   */
   private void handleConfigRequest(HttpServletRequest req, HttpServletResponse resp)
       throws IOException {
     try {
