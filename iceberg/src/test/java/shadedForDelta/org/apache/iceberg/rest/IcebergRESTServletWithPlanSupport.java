@@ -50,9 +50,8 @@ public class IcebergRESTServletWithPlanSupport extends RESTCatalogServlet {
 
   /**
    * Override GET to handle /v1/config requests with catalog prefix.
-   * Note: We handle this at servlet level because UnityCatalogMetadata makes
-   * direct HTTP calls (not through adapter), and the shaded RESTCatalogAdapter
-   * doesn't expose the server-side execute() method we'd need to intercept.
+   * Note: We handle this at servlet level because the shaded RESTCatalogAdapter
+   * doesn't expose the server-side execute() method needed for interception.
    */
   @Override
   protected void doGet(HttpServletRequest req, HttpServletResponse resp)

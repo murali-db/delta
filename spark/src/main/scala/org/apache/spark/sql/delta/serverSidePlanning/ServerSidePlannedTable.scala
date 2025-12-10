@@ -109,16 +109,13 @@ object ServerSidePlannedTable extends DeltaLogging {
       val metadata = ServerSidePlanningMetadata.fromTable(table, spark, ident, isUnityCatalog)
 
       // Try to create ServerSidePlannedTable with server-side planning
-      create(spark, namespace, tableName, table.schema(), metadata) match {
-        case Some(plannedTable) =>
-          Some(plannedTable)
-        case None =>
-          // Factory not registered - fall through to normal path
-          logWarning(
-            s"Server-side planning not available for catalog ${metadata.catalogName}. " +
-              "Falling back to normal table loading.")
-          None
+      val plannedTable = tryCreate(spark, namespace, tableName, table.schema(), metadata)
+      if (plannedTable.isEmpty) {
+        logWarning(
+          s"Server-side planning not available for catalog ${metadata.catalogName}. " +
+            "Falling back to normal table loading.")
       }
+      plannedTable
     } else {
       None
     }
@@ -135,7 +132,7 @@ object ServerSidePlannedTable extends DeltaLogging {
    * @param metadata Metadata extracted from loadTable response
    * @return Some(ServerSidePlannedTable) if successful, None if factory not registered
    */
-  private def create(
+  private def tryCreate(
       spark: SparkSession,
       database: String,
       tableName: String,
