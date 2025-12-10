@@ -60,8 +60,7 @@ class IcebergRESTCatalogPlanningClient(
   private val UNPARTITIONED_SPEC_ID = 0
 
   private val httpHeaders = Map(
-    // TODO: Authentication not yet implemented. Uncomment when ready to add Bearer token auth.
-    // HttpHeaders.AUTHORIZATION -> s"Bearer $token",
+    HttpHeaders.AUTHORIZATION -> s"Bearer $token",
     HttpHeaders.ACCEPT -> ContentType.APPLICATION_JSON.getMimeType,
     HttpHeaders.CONTENT_TYPE -> ContentType.APPLICATION_JSON.getMimeType
   ).map { case (k, v) => new BasicHeader(k, v) }.toSeq.asJava
