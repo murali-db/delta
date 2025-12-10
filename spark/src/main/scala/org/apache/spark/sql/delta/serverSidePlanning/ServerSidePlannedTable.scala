@@ -502,8 +502,9 @@ class PresignedUrlJsonPartitionReader(
         val content = EntityUtils.toString(response.getEntity)
         // scalastyle:off println
         println(s"[DEBUG PresignedUrlJsonPartitionReader] Response length: ${content.length}")
-        println(s"[DEBUG PresignedUrlJsonPartitionReader] Response (first 500 chars):")
-        println(content.take(500))
+        println(s"[DEBUG PresignedUrlJsonPartitionReader] === FULL JSON RESPONSE ===")
+        println(content)
+        println(s"[DEBUG PresignedUrlJsonPartitionReader] === END JSON RESPONSE ===")
         // scalastyle:on println
         content
       } finally {
