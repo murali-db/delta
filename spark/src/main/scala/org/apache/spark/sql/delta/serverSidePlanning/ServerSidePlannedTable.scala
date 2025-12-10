@@ -16,10 +16,17 @@
 
 package org.apache.spark.sql.delta.serverSidePlanning
 
+import java.io.IOException
 import java.util
 import java.util.Locale
 
 import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
+
+import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import org.apache.http.client.methods.HttpGet
+import org.apache.http.impl.client.HttpClients
+import org.apache.http.util.EntityUtils
 
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.SparkSession
@@ -28,11 +35,13 @@ import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.connector.catalog.{SupportsRead, Table, TableCapability}
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.execution.datasources.{FileFormat, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.unsafe.types.UTF8String
 
 /**
  * Companion object for ServerSidePlannedTable with factory methods.
@@ -379,17 +388,36 @@ class ServerSidePlannedFilePartitionReaderFactory(
   override def createReader(partition: InputPartition): PartitionReader[InternalRow] = {
     val filePartition = partition.asInstanceOf[ServerSidePlannedFileInputPartition]
 
-    // Verify file format is Parquet
-    // Scalastyle suppression needed: the caselocale regex incorrectly flags even correct usage
-    // of toLowerCase(Locale.ROOT). Similar to PartitionUtils.scala and SchemaUtils.scala.
-    // scalastyle:off caselocale
-    if (filePartition.fileFormat.toLowerCase(Locale.ROOT) != "parquet") {
-    // scalastyle:on caselocale
-      throw new UnsupportedOperationException(
-        s"File format '${filePartition.fileFormat}' is not supported. Only Parquet is supported.")
-    }
+    // Check if this is a presigned URL (HTTPS) vs S3 path
+    if (isPresignedUrl(filePartition.filePath)) {
+      // Presigned URL path - use JSON reader
+      // Note: UC reports fileFormat as "PARQUET" even when returning JSON from presigned URLs
+      // So we don't validate the format field here - we rely solely on URL detection
+      new PresignedUrlJsonPartitionReader(filePartition.filePath, schema)
 
-    new ServerSidePlannedFilePartitionReader(filePartition, parquetReaderBuilder)
+    } else {
+      // S3 path - use Parquet reader with credential injection
+      // Scalastyle suppression needed: the caselocale regex incorrectly flags even correct usage
+      // of toLowerCase(Locale.ROOT). Similar to PartitionUtils.scala and SchemaUtils.scala.
+      // scalastyle:off caselocale
+      if (filePartition.fileFormat.toLowerCase(Locale.ROOT) != "parquet") {
+      // scalastyle:on caselocale
+        throw new UnsupportedOperationException(
+          s"File format '${filePartition.fileFormat}' is not supported. Only Parquet is supported.")
+      }
+
+      new ServerSidePlannedFilePartitionReader(filePartition, parquetReaderBuilder)
+    }
+  }
+
+  /**
+   * Detect if a file path is a presigned URL.
+   * MVP implementation: hardcode HTTPS detection.
+   *
+   * Future enhancement: Check for UC-specific URL patterns, expiration parameters, etc.
+   */
+  private def isPresignedUrl(filePath: String): Boolean = {
+    filePath.startsWith("https://")
   }
 }
 
@@ -426,5 +454,171 @@ class ServerSidePlannedFilePartitionReader(
 
   override def close(): Unit = {
     // Reader cleanup is handled by Spark
+  }
+}
+
+/**
+ * PartitionReader that reads JSON data from presigned URLs.
+ * Supports both newline-delimited JSON and JSON array formats.
+ *
+ * This reader is used when Unity Catalog returns presigned URLs in MATERIALIZED_JSON mode,
+ * which happens for tables with FGAC policies (row-level security, column masking).
+ *
+ * @param presignedUrl The HTTPS presigned URL to fetch JSON data from
+ * @param expectedSchema The schema that JSON data should conform to
+ */
+class PresignedUrlJsonPartitionReader(
+    presignedUrl: String,
+    expectedSchema: StructType)
+    extends PartitionReader[InternalRow] {
+
+  private val objectMapper = new ObjectMapper()
+  private lazy val jsonContent: String = fetchJsonContent()
+  private lazy val jsonIterator: Iterator[JsonNode] = parseJson(jsonContent)
+
+  private var currentRow: Option[InternalRow] = None
+
+  /**
+   * Fetch JSON content from presigned URL via HTTP GET.
+   * Presigned URLs are time-limited, typically valid for 15-60 minutes.
+   */
+  private def fetchJsonContent(): String = {
+    val httpClient = HttpClients.createDefault()
+    try {
+      val httpGet = new HttpGet(presignedUrl)
+      val response = httpClient.execute(httpGet)
+      try {
+        val statusCode = response.getStatusLine.getStatusCode
+        if (statusCode != 200) {
+          throw new IOException(
+            s"Failed to fetch presigned URL. HTTP status: $statusCode, URL: $presignedUrl")
+        }
+        EntityUtils.toString(response.getEntity)
+      } finally {
+        response.close()
+      }
+    } catch {
+      case e: Exception =>
+        throw new IOException(s"Error fetching presigned URL: $presignedUrl", e)
+    } finally {
+      httpClient.close()
+    }
+  }
+
+  /**
+   * Parse JSON content from Unity Catalog presigned URLs.
+   *
+   * UC returns JSON in array-of-arrays format where:
+   * - Outer array contains rows
+   * - Each inner array contains column values in schema order
+   *
+   * Example: [["alice"], ["bob"], ["charlie"]]
+   * For a single-column "name" field
+   */
+  private def parseJson(content: String): Iterator[JsonNode] = {
+    val trimmed = content.trim
+
+    // UC presigned URLs always return JSON array format
+    if (!trimmed.startsWith("[")) {
+      throw new IllegalArgumentException(
+        s"Expected JSON array from presigned URL but got: ${trimmed.take(100)}...")
+    }
+
+    val arrayNode = objectMapper.readTree(trimmed)
+    if (!arrayNode.isArray) {
+      throw new IllegalArgumentException(
+        s"Expected JSON array but got: ${arrayNode.getNodeType}")
+    }
+
+    arrayNode.elements().asScala
+  }
+
+  /**
+   * Convert JsonNode (array of values) to InternalRow according to expected schema.
+   *
+   * UC returns each row as a JSON array where values are in the same order as schema fields.
+   * Example: For schema (id: Int, name: String), UC returns: [1, "alice"]
+   *
+   * Validates that array length matches schema and types are compatible.
+   */
+  private def jsonToInternalRow(jsonNode: JsonNode): InternalRow = {
+    // Validate this is an array (each row from UC is an array)
+    if (!jsonNode.isArray) {
+      throw new IllegalArgumentException(
+        s"Expected JSON array for row but got: ${jsonNode.getNodeType}")
+    }
+
+    // Validate array length matches schema
+    if (jsonNode.size() != expectedSchema.length) {
+      throw new IllegalArgumentException(
+        s"JSON array size (${jsonNode.size()}) doesn't match schema field count " +
+        s"(${expectedSchema.length}). Schema: ${expectedSchema.fieldNames.mkString(", ")}")
+    }
+
+    val values = new Array[Any](expectedSchema.length)
+
+    expectedSchema.fields.zipWithIndex.foreach { case (field, index) =>
+      val jsonValue = jsonNode.get(index)
+
+      if (jsonValue == null || jsonValue.isNull) {
+        if (!field.nullable) {
+          throw new IllegalArgumentException(
+            s"Required field '${field.name}' (index $index) is null in JSON array")
+        }
+        values(index) = null
+      } else {
+        values(index) = field.dataType match {
+          case IntegerType => jsonValue.asInt()
+          case LongType => jsonValue.asLong()
+          case DoubleType => jsonValue.asDouble()
+          case FloatType => jsonValue.asDouble().toFloat
+          case StringType => UTF8String.fromString(jsonValue.asText())
+          case BooleanType => jsonValue.asBoolean()
+          case ShortType => jsonValue.asInt().toShort
+          case ByteType => jsonValue.asInt().toByte
+          case DateType =>
+            // Assumes JSON contains date as string "yyyy-MM-dd"
+            // Convert to days since epoch
+            val dateStr = jsonValue.asText()
+            java.sql.Date.valueOf(dateStr).toLocalDate.toEpochDay.toInt
+          case TimestampType =>
+            // Assumes JSON contains ISO-8601 timestamp
+            val tsStr = jsonValue.asText()
+            java.sql.Timestamp.valueOf(tsStr).getTime * 1000L // Convert to microseconds
+          case _ =>
+            throw new UnsupportedOperationException(
+              s"Unsupported data type for JSON conversion: ${field.dataType} " +
+              s"for field '${field.name}'")
+        }
+      }
+    }
+
+    new GenericInternalRow(values)
+  }
+
+  override def next(): Boolean = {
+    if (jsonIterator.hasNext) {
+      try {
+        val jsonNode = jsonIterator.next()
+        currentRow = Some(jsonToInternalRow(jsonNode))
+        true
+      } catch {
+        case e: Exception =>
+          throw new RuntimeException(
+            s"Error parsing JSON row from presigned URL: $presignedUrl", e)
+      }
+    } else {
+      currentRow = None
+      false
+    }
+  }
+
+  override def get(): InternalRow = {
+    currentRow.getOrElse(
+      throw new IllegalStateException("No current row available. Call next() first."))
+  }
+
+  override def close(): Unit = {
+    // Cleanup handled by lazy initialization
   }
 }
