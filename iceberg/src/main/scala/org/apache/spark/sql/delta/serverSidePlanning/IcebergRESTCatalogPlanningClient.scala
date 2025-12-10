@@ -81,8 +81,8 @@ class IcebergRESTCatalogPlanningClient(
     // See: https://iceberg.apache.org/rest-catalog-spec/
     // Use MATERIALIZED_JSON implementation to get presigned URLs for FGAC tables.
     // This enables support for tables with column masking and row-level security.
-    val planTableScanUri =
-      s"$icebergRestCatalogUriRoot/v1/namespaces/$database/tables/$table/plan?implementation=MATERIALIZED_JSON"
+    val planTableScanUri = s"$icebergRestCatalogUriRoot/v1/namespaces/$database/tables/" +
+      s"$table/plan?implementation=MATERIALIZED_JSON"
 
     // Request planning for current snapshot. snapshotId = 0 means "use current snapshot"
     // in the Iceberg REST API spec. Time-travel queries are not yet supported.
