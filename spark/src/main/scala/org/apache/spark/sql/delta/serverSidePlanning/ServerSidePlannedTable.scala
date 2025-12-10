@@ -482,17 +482,30 @@ class PresignedUrlJsonPartitionReader(
    * Presigned URLs are time-limited, typically valid for 15-60 minutes.
    */
   private def fetchJsonContent(): String = {
+    // DEBUG: Print URL being fetched
+    // scalastyle:off println
+    println(s"[DEBUG PresignedUrlJsonPartitionReader] Fetching URL: $presignedUrl")
+    // scalastyle:on println
     val httpClient = HttpClients.createDefault()
     try {
       val httpGet = new HttpGet(presignedUrl)
       val response = httpClient.execute(httpGet)
       try {
         val statusCode = response.getStatusLine.getStatusCode
+        // scalastyle:off println
+        println(s"[DEBUG PresignedUrlJsonPartitionReader] HTTP status: $statusCode")
+        // scalastyle:on println
         if (statusCode != 200) {
           throw new IOException(
             s"Failed to fetch presigned URL. HTTP status: $statusCode, URL: $presignedUrl")
         }
-        EntityUtils.toString(response.getEntity)
+        val content = EntityUtils.toString(response.getEntity)
+        // scalastyle:off println
+        println(s"[DEBUG PresignedUrlJsonPartitionReader] Response length: ${content.length}")
+        println(s"[DEBUG PresignedUrlJsonPartitionReader] Response (first 500 chars):")
+        println(content.take(500))
+        // scalastyle:on println
+        content
       } finally {
         response.close()
       }

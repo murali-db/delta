@@ -145,10 +145,25 @@ class IcebergRESTCatalogPlanningClient(
     require(response != null, "PlanTableScanResponse cannot be null")
     require(response.fileScanTasks() != null, "File scan tasks cannot be null")
 
+    // DEBUG: Print raw response
+    // scalastyle:off println
+    println(s"[DEBUG IcebergRESTCatalogPlanningClient] Raw response (first 1000 chars):")
+    println(responseBody.take(1000))
+    println(s"[DEBUG IcebergRESTCatalogPlanningClient] Number of file scan tasks: " +
+      s"${response.fileScanTasks().size()}")
+    // scalastyle:on println
+
     val files = response.fileScanTasks().asScala.map { task =>
       require(task != null, "FileScanTask cannot be null")
       require(task.file() != null, "DataFile cannot be null")
       val file = task.file()
+
+      // DEBUG: Print file info
+      // scalastyle:off println
+      println(s"[DEBUG IcebergRESTCatalogPlanningClient] File path: ${file.path()}")
+      println(s"[DEBUG IcebergRESTCatalogPlanningClient] File format: ${file.format()}")
+      println(s"[DEBUG IcebergRESTCatalogPlanningClient] File size: ${file.fileSizeInBytes()}")
+      // scalastyle:on println
 
       // Validate that table is unpartitioned. Partitioned tables are not supported yet.
       if (file.partition().size() > 0) {
