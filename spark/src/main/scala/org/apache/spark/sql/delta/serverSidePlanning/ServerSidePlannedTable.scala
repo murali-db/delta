@@ -21,7 +21,6 @@ import java.util
 import java.util.Locale
 
 import scala.collection.JavaConverters._
-import scala.jdk.CollectionConverters._
 
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import org.apache.http.client.methods.HttpGet
