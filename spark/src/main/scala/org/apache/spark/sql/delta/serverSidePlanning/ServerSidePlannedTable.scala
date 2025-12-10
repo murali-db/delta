@@ -512,8 +512,10 @@ class PresignedUrlJsonPartitionReader(
    * - Outer array contains rows
    * - Each inner array contains column values in schema order
    *
-   * Example: [["alice"], ["bob"], ["charlie"]]
-   * For a single-column "name" field
+   * Example for a single-column "name" field:
+   * {{{
+   * [["alice"], ["bob"], ["charlie"]]
+   * }}}
    */
   private def parseJson(content: String): Iterator[JsonNode] = {
     val trimmed = content.trim
@@ -537,7 +539,10 @@ class PresignedUrlJsonPartitionReader(
    * Convert JsonNode (array of values) to InternalRow according to expected schema.
    *
    * UC returns each row as a JSON array where values are in the same order as schema fields.
-   * Example: For schema (id: Int, name: String), UC returns: [1, "alice"]
+   * Example for schema (id: Int, name: String), UC returns:
+   * {{{
+   * [1, "alice"]
+   * }}}
    *
    * Validates that array length matches schema and types are compatible.
    */
