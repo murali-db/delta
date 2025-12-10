@@ -60,7 +60,8 @@ case class UnityCatalogMetadata(
    */
   private def constructPlanEndpoint(ucUri: String): String = {
     val baseUri = if (ucUri.endsWith("/")) ucUri.dropRight(1) else ucUri
-    s"$baseUri/api/2.1/unity-catalog/iceberg"
+    // Use iceberg-rest endpoint with catalog prefix
+    s"$baseUri/api/2.1/unity-catalog/iceberg-rest/v1/catalogs/$catalogName"
   }
 }
 
