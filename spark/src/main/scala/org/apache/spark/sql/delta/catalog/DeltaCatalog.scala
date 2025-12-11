@@ -37,7 +37,7 @@ import org.apache.spark.sql.delta.logging.DeltaLogKeys
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.redirect.RedirectFeature
 import org.apache.spark.sql.delta.schema.SchemaUtils
-import org.apache.spark.sql.delta.serverSidePlanning.ServerSidePlannedTable
+import org.apache.spark.sql.delta.serverSidePlanning.{FGACDebugLog, ServerSidePlannedTable}
 import org.apache.spark.sql.delta.sources.{DeltaDataSource, DeltaSourceUtils, DeltaSQLConf}
 import org.apache.spark.sql.delta.stats.StatisticsCollection
 import org.apache.spark.sql.delta.tablefeatures.DropFeature
@@ -228,12 +228,16 @@ class DeltaCatalog extends DelegatingCatalogExtension
 
   override def loadTable(ident: Identifier): Table = recordFrameProfile(
       "DeltaCatalog", "loadTable") {
+    FGACDebugLog.log("DeltaCatalog.loadTable", s"Called with ident: $ident")
     try {
       val table = super.loadTable(ident)
+      FGACDebugLog.log("DeltaCatalog.loadTable", s"Loaded table: ${table.getClass.getName}")
 
       ServerSidePlannedTable.tryCreate(spark, ident, table, isUnityCatalog).foreach { sspt =>
+        FGACDebugLog.log("DeltaCatalog.loadTable", "SSP table created, returning")
         return sspt
       }
+      FGACDebugLog.log("DeltaCatalog.loadTable", "SSP tryCreate returned None")
 
       table match {
         case v1: V1Table if DeltaTableUtils.isDeltaTable(v1.catalogTable) =>
