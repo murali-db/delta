@@ -21,17 +21,12 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
 /**
- * Simple debug logger that writes FGAC debug output to ~/.sparkshell_cache/fgac_debug.log.
+ * Simple debug logger that writes FGAC debug output to /tmp/fgac_debug.log.
  * This is for debugging server-side planning issues.
  */
 object FGACDebugLog {
-  // Write to ~/.sparkshell_cache/fgac_debug.log (works in both local and notebook environments)
-  private val LOG_FILE = {
-    val homeDir = System.getProperty("user.home")
-    val cacheDir = new java.io.File(homeDir, ".sparkshell_cache")
-    cacheDir.mkdirs() // Ensure directory exists
-    new java.io.File(cacheDir, "fgac_debug.log").getAbsolutePath
-  }
+  // Write to /tmp/fgac_debug.log - simple, always writable
+  private val LOG_FILE = "/tmp/fgac_debug.log"
   private val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
 
   // Clear log file on first use
