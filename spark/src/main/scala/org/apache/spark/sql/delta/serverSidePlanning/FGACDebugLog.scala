@@ -51,9 +51,13 @@ object FGACDebugLog {
   def log(component: String, message: String): Unit = synchronized {
     ensureInitialized()
     val timestamp = LocalDateTime.now().format(formatter)
+    val line = s"[$timestamp] [$component] $message"
+    // scalastyle:off println
+    System.out.println(s"[FGAC-LOG] $line")
+    // scalastyle:on println
     val writer = new PrintWriter(new FileWriter(LOG_FILE, true))
     try {
-      writer.write(s"[$timestamp] [$component] $message\n")
+      writer.write(line + "\n")
       writer.flush()
     } finally {
       writer.close()
