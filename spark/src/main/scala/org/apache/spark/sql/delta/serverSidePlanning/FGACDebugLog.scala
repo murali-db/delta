@@ -34,11 +34,17 @@ object FGACDebugLog {
 
   private def ensureInitialized(): Unit = synchronized {
     if (!initialized) {
+      // scalastyle:off println
+      System.out.println(s"[FGAC] Creating debug log at $LOG_FILE")
+      // scalastyle:on println
       val writer = new PrintWriter(new FileWriter(LOG_FILE, false))
       val ts = LocalDateTime.now().format(formatter)
       writer.write(s"=== FGAC Debug Log Started at $ts ===\n")
       writer.close()
       initialized = true
+      // scalastyle:off println
+      System.out.println(s"[FGAC] Debug log created successfully")
+      // scalastyle:on println
     }
   }
 
