@@ -106,30 +106,48 @@ object ServerSidePlannedTable extends DeltaLogging {
       ident: Identifier,
       table: Table,
       isUnityCatalog: Boolean): Option[ServerSidePlannedTable] = {
+    val L = "SSPTable.tryCreate" // Short name for logging
+    val identStr = s"${ident.namespace().mkString(".")}.${ident.name()}"
+    FGACDebugLog.log(L, s"Called with: ident=$identStr")
+    FGACDebugLog.log(L, s"  table class: ${table.getClass.getName}")
+    FGACDebugLog.log(L, s"  isUnityCatalog: $isUnityCatalog")
+
     // Check if we should force server-side planning (for testing)
-    val forceServerSidePlanning =
+    val forceSSP =
       spark.conf.get(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "false").toBoolean
-    val hasTableCredentials = hasCredentials(table)
+    val hasCreds = hasCredentials(table)
+
+    FGACDebugLog.log(L, s"Decision: forceSSP=$forceSSP, hasCreds=$hasCreds")
 
     // Check if we should use server-side planning
-    if (shouldUseServerSidePlanning(isUnityCatalog, hasTableCredentials, forceServerSidePlanning)) {
+    if (shouldUseServerSidePlanning(isUnityCatalog, hasCreds, forceSSP)) {
+      FGACDebugLog.log(L, "shouldUseServerSidePlanning=true, proceeding")
+
       val namespace = ident.namespace().mkString(".")
       val tableName = ident.name()
 
-      // Create metadata from table - this reads config once and extracts all needed info
-      val metadata = ServerSidePlanningMetadata.fromTable(table, spark, ident, isUnityCatalog)
+      // Create metadata from table
+      val metadata = ServerSidePlanningMetadata.fromTable(
+        table, spark, ident, isUnityCatalog)
+
+      FGACDebugLog.log(L, s"Metadata: catalog=${metadata.catalogName}")
+      FGACDebugLog.log(L, s"  endpoint=${metadata.planningEndpointUri}")
+      FGACDebugLog.log(L, s"  ucUri=${metadata.unityCatalogUri}")
+      FGACDebugLog.log(L, s"  hasToken=${metadata.authToken.isDefined}")
 
       // Try to create ServerSidePlannedTable with server-side planning
       create(spark, namespace, tableName, table.schema(), metadata) match {
         case Some(plannedTable) =>
+          FGACDebugLog.log(L, "SUCCESS - created")
           Some(plannedTable)
         case None =>
-          // Factory not registered - fall through to normal path
-          logWarning(s"Server-side planning not available for catalog ${metadata.catalogName}. " +
-            "Falling back to normal table loading.")
+          FGACDebugLog.log(L, "FAILED - create() returned None")
+          logWarning(s"Server-side planning not available for " +
+            s"catalog ${metadata.catalogName}. Falling back.")
           None
       }
     } else {
+      FGACDebugLog.log(L, "shouldUseServerSidePlanning=false, skipping")
       None
     }
   }
@@ -151,17 +169,26 @@ object ServerSidePlannedTable extends DeltaLogging {
       tableName: String,
       tableSchema: StructType,
       metadata: ServerSidePlanningMetadata): Option[ServerSidePlannedTable] = {
+    val L = "SSPTable.create"
+    FGACDebugLog.log(L, "Building client from metadata...")
     try {
-      val client = ServerSidePlanningClientFactory.buildFromMetadata(spark, metadata)
+      val client = ServerSidePlanningClientFactory.buildFromMetadata(
+        spark, metadata)
+      FGACDebugLog.log(L, s"Client: ${client.getClass.getName}")
+      FGACDebugLog.log(L, "Creating ServerSidePlannedTable...")
       Some(new ServerSidePlannedTable(
         spark, database, tableName, tableSchema, client,
         metadata.catalogName,
         metadata.unityCatalogUri.getOrElse(""),
         metadata.unityCatalogToken.getOrElse("")))
     } catch {
-      case _: IllegalStateException =>
-        // Factory not registered - this shouldn't happen in production but could during testing
+      case e: IllegalStateException =>
+        FGACDebugLog.log(L, s"IllegalStateException: ${e.getMessage}")
         None
+      case e: Exception =>
+        FGACDebugLog.log(L, s"Exception: ${e.getClass.getName}")
+        FGACDebugLog.logException(L, e)
+        throw e
     }
   }
 

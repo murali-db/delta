@@ -71,6 +71,12 @@ class IcebergRESTCatalogPlanningClient(
     .build()
 
   override def planScan(database: String, table: String): ScanPlan = {
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.planScan", s"Called with:")
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.planScan", s"  database: $database")
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.planScan", s"  table: $table")
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.planScan",
+      s"  icebergRestCatalogUriRoot: $icebergRestCatalogUriRoot")
+
     // TODO: Follow Iceberg REST catalog spec for proper path construction. Per the spec, clients
     // should first call GET /v1/config to retrieve catalog configuration including the optional
     // "prefix" parameter in the overrides section (e.g., overrides.prefix). This prefix should
@@ -84,11 +90,17 @@ class IcebergRESTCatalogPlanningClient(
     val planTableScanUri = s"$icebergRestCatalogUriRoot/namespaces/$database/tables/" +
       s"$table/plan?implementation=MATERIALIZED_JSON"
 
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.planScan", s"Request URL: $planTableScanUri")
+
     // Request planning for current snapshot. snapshotId = 0 means "use current snapshot"
     // in the Iceberg REST API spec. Time-travel queries are not yet supported.
     val request = new PlanTableScanRequest.Builder().withSnapshotId(CURRENT_SNAPSHOT_ID).build()
 
     val requestJson = PlanTableScanRequestParser.toJson(request)
+
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.planScan", s"Request body: $requestJson")
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.planScan", "Executing HTTP POST...")
+
     val httpPost = new HttpPost(planTableScanUri)
     httpPost.setEntity(new StringEntity(requestJson, ContentType.APPLICATION_JSON))
     // TODO: Add retry logic for transient HTTP failures (e.g., connection timeouts, 5xx errors)
@@ -145,25 +157,23 @@ class IcebergRESTCatalogPlanningClient(
     require(response != null, "PlanTableScanResponse cannot be null")
     require(response.fileScanTasks() != null, "File scan tasks cannot be null")
 
-    // DEBUG: Print raw response
-    // scalastyle:off println
-    println(s"[DEBUG IcebergRESTCatalogPlanningClient] Raw response (first 1000 chars):")
-    println(responseBody.take(1000))
-    println(s"[DEBUG IcebergRESTCatalogPlanningClient] Number of file scan tasks: " +
-      s"${response.fileScanTasks().size()}")
-    // scalastyle:on println
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.convertToScanPlan",
+      s"Raw response (first 1000 chars):")
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.convertToScanPlan", responseBody.take(1000))
+    FGACDebugLog.log("IcebergRESTCatalogPlanningClient.convertToScanPlan",
+      s"Number of file scan tasks: ${response.fileScanTasks().size()}")
 
     val files = response.fileScanTasks().asScala.map { task =>
       require(task != null, "FileScanTask cannot be null")
       require(task.file() != null, "DataFile cannot be null")
       val file = task.file()
 
-      // DEBUG: Print file info
-      // scalastyle:off println
-      println(s"[DEBUG IcebergRESTCatalogPlanningClient] File path: ${file.path()}")
-      println(s"[DEBUG IcebergRESTCatalogPlanningClient] File format: ${file.format()}")
-      println(s"[DEBUG IcebergRESTCatalogPlanningClient] File size: ${file.fileSizeInBytes()}")
-      // scalastyle:on println
+      FGACDebugLog.log("IcebergRESTCatalogPlanningClient.convertToScanPlan",
+        s"File path: ${file.path()}")
+      FGACDebugLog.log("IcebergRESTCatalogPlanningClient.convertToScanPlan",
+        s"File format: ${file.format()}")
+      FGACDebugLog.log("IcebergRESTCatalogPlanningClient.convertToScanPlan",
+        s"File size: ${file.fileSizeInBytes()}")
 
       // Validate that table is unpartitioned. Partitioned tables are not supported yet.
       if (file.partition().size() > 0) {
