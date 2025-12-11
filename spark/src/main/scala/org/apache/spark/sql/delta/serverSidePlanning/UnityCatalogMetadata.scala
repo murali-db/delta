@@ -71,11 +71,20 @@ object UnityCatalogMetadata {
       spark: SparkSession,
       ident: Identifier): UnityCatalogMetadata = {
 
+    // Try to get catalog name from namespace first, then fall back to defaultCatalog config
     val catalogName = if (ident.namespace().length > 1) {
       ident.namespace().head
     } else {
-      "spark_catalog"
+      // When using a Unity Catalog, the catalog name is typically the defaultCatalog
+      // since Spark resolves it before passing the identifier
+      spark.conf.get("spark.sql.defaultCatalog", "spark_catalog")
     }
+
+    // Debug: print the extracted catalog name
+    // scalastyle:off println
+    val identStr = s"${ident.namespace().mkString(".")}.${ident.name()}"
+    println(s"[DEBUG UnityCatalogMetadata] Extracted catalogName: $catalogName from: $identStr")
+    // scalastyle:on println
 
     // Read UC configuration from Spark conf
     val ucUri = spark.conf.get(s"spark.sql.catalog.$catalogName.uri", "")

@@ -839,6 +839,9 @@ val deltaIcebergSparkIncludePrefixes = Seq(
   // We want everything from this package
   "org/apache/spark/sql/delta/icebergShaded",
 
+  // Server-side planning client implementation for Unity Catalog FGAC support
+  "org/apache/spark/sql/delta/serverSidePlanning/IcebergRESTCatalogPlanningClient",
+
   // We only want the files in this project from this package. e.g. we want to exclude
   // org/apache/spark/sql/delta/commands/convert/ConvertTargetFile.class (from delta-spark project).
   "org/apache/spark/sql/delta/commands/convert/IcebergFileManifest",
