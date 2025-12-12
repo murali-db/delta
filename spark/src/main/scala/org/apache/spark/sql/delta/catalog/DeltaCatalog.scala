@@ -251,6 +251,7 @@ class DeltaCatalog extends DelegatingCatalogExtension
     } catch {
       case e @ (
         _: NoSuchDatabaseException | _: NoSuchNamespaceException | _: NoSuchTableException) =>
+          FGACDebugLog.log("DeltaCatalog.loadTable", s"Caught NoSuch exception: ${e.getMessage}")
           if (isPathIdentifier(ident)) {
             newDeltaPathTable(ident)
           } else if (isIcebergPathIdentifier(ident)) {
@@ -259,9 +260,14 @@ class DeltaCatalog extends DelegatingCatalogExtension
             throw e
           }
       case e: AnalysisException if gluePermissionError(e) && isPathIdentifier(ident) =>
+        FGACDebugLog.log("DeltaCatalog.loadTable", s"Caught Glue error: ${e.getMessage}")
         logWarning(log"Received an access denied error from Glue. Assuming this " +
           log"identifier (${MDC(DeltaLogKeys.TABLE_NAME, ident)}) is path based.", e)
         newDeltaPathTable(ident)
+      case e: Throwable =>
+        FGACDebugLog.log("DeltaCatalog.loadTable", s"Caught exception: ${e.getClass.getName}")
+        FGACDebugLog.log("DeltaCatalog.loadTable", s"Message: ${e.getMessage}")
+        throw e
     }
   }
 
