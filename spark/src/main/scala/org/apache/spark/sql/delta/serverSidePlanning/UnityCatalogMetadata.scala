@@ -59,7 +59,13 @@ case class UnityCatalogMetadata(
    * For now, we use the simple UC-specific path which works for current UC deployments.
    */
   private def constructPlanEndpoint(ucUri: String): String = {
-    val baseUri = if (ucUri.endsWith("/")) ucUri.dropRight(1) else ucUri
+    // Remove trailing slash and any existing /api/2.1/unity-catalog suffix to avoid duplication
+    val trimmed = if (ucUri.endsWith("/")) ucUri.dropRight(1) else ucUri
+    val baseUri = if (trimmed.endsWith("/api/2.1/unity-catalog")) {
+      trimmed.stripSuffix("/api/2.1/unity-catalog")
+    } else {
+      trimmed
+    }
     // Use iceberg-rest endpoint with catalog prefix
     s"$baseUri/api/2.1/unity-catalog/iceberg-rest/v1/catalogs/$catalogName"
   }
