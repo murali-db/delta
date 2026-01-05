@@ -84,11 +84,12 @@ class IcebergRESTCatalogPlanningClient(
     // of hardcoding /v1/namespaces/... This allows catalogs to support multi-tenant hierarchies
     // (e.g., AWS Glue uses /catalogs/{catalog}, S3 Tables uses table bucket ARNs).
     // See: https://iceberg.apache.org/rest-catalog-spec/
-    // Use MATERIALIZED_JSON implementation to get presigned URLs for FGAC tables.
+    // Use MATERIALIZED_PARQUET implementation to get Parquet files for FGAC tables.
     // This enables support for tables with column masking and row-level security.
+    // UC server applies FGAC policies and returns pre-materialized Parquet files.
     // Note: icebergRestCatalogUriRoot already includes /v1/catalogs/{catalog}
     val planTableScanUri = s"$icebergRestCatalogUriRoot/namespaces/$database/tables/" +
-      s"$table/plan?implementation=MATERIALIZED_JSON"
+      s"$table/plan?implementation=MATERIALIZED_PARQUET"
 
     FGACDebugLog.log("IcebergRESTCatalogPlanningClient.planScan", s"Request URL: $planTableScanUri")
 
