@@ -209,6 +209,7 @@ class ServerSidePlannedTable(
  * ScanBuilder that uses ServerSidePlanningClient to plan the scan.
  * Implements SupportsPushDownFilters to enable WHERE clause pushdown to the server.
  * Implements SupportsPushDownRequiredColumns to enable column pruning pushdown to the server.
+ * Implements SupportsPushDownLimit to enable LIMIT pushdown to the server.
  */
 class ServerSidePlannedScanBuilder(
     spark: SparkSession,
@@ -216,13 +217,19 @@ class ServerSidePlannedScanBuilder(
     tableName: String,
     tableSchema: StructType,
     planningClient: ServerSidePlanningClient)
-  extends ScanBuilder with SupportsPushDownFilters with SupportsPushDownRequiredColumns {
+  extends ScanBuilder
+  with SupportsPushDownFilters
+  with SupportsPushDownRequiredColumns
+  with SupportsPushDownLimit {
 
   // Filters that have been pushed down and will be sent to the server
   private var _pushedFilters: Array[Filter] = Array.empty
 
   // Required schema (columns to read). Defaults to full table schema.
   private var _requiredSchema: StructType = tableSchema
+
+  // Limit that has been pushed down. None means no limit.
+  private var _limit: Option[Int] = None
 
   override def pushFilters(filters: Array[Filter]): Array[Filter] = {
     // Store filters to send to catalog, but return all as residuals.
@@ -238,9 +245,17 @@ class ServerSidePlannedScanBuilder(
     _requiredSchema = requiredSchema
   }
 
+  override def pushLimit(limit: Int): Boolean = {
+    _limit = Some(limit)
+    false  // We forward to server, but Spark should apply limit too as safety net
+  }
+
+  override def isPartiallyPushed(): Boolean = false
+
   override def build(): Scan = {
     new ServerSidePlannedScan(
-      spark, databaseName, tableName, tableSchema, planningClient, _pushedFilters, _requiredSchema)
+      spark, databaseName, tableName, tableSchema, planningClient, _pushedFilters, _requiredSchema,
+      _limit)
   }
 }
 
@@ -254,7 +269,8 @@ class ServerSidePlannedScan(
     tableSchema: StructType,
     planningClient: ServerSidePlanningClient,
     pushedFilters: Array[Filter],
-    requiredSchema: StructType) extends Scan with Batch {
+    requiredSchema: StructType,
+    limit: Option[Int]) extends Scan with Batch {
 
   override def readSchema(): StructType = requiredSchema
 
@@ -288,7 +304,8 @@ class ServerSidePlannedScan(
     databaseName,
     tableName,
     combinedFilter,
-    projectionColumnNames)
+    projectionColumnNames,
+    limit)
 
   override def planInputPartitions(): Array[InputPartition] = {
     // Convert each file to an InputPartition
