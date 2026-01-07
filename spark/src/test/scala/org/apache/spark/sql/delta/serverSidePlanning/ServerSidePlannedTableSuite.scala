@@ -350,4 +350,51 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       assert(gtFilter.get.value == 10, s"Expected GreaterThan value 10, got ${gtFilter.get.value}")
     }
   }
+
+  test("limit pushed to planning client") {
+    withPushdownCapturingEnabled {
+      sql("SELECT id, name, value FROM test_db.shared_test LIMIT 2").collect()
+
+      val capturedLimit = TestServerSidePlanningClient.getCapturedLimit
+      assert(capturedLimit.isDefined, "Limit should be pushed down")
+      assert(capturedLimit.get == 2, s"Expected limit 2, got ${capturedLimit.get}")
+    }
+  }
+
+  test("no limit pushed when no LIMIT clause") {
+    withPushdownCapturingEnabled {
+      sql("SELECT id, name, value FROM test_db.shared_test").collect()
+
+      val capturedLimit = TestServerSidePlanningClient.getCapturedLimit
+      assert(capturedLimit.isEmpty, "No limit should be pushed when there's no LIMIT clause")
+    }
+  }
+
+  test("limit, projection, and filter pushed together") {
+    withPushdownCapturingEnabled {
+      sql("SELECT id FROM test_db.shared_test WHERE value > 10 LIMIT 5").collect()
+
+      // Verify projection pushed
+      val capturedProjection = TestServerSidePlanningClient.getCapturedProjection
+      assert(capturedProjection.isDefined, "Projection should be pushed down")
+      val projectedFields = capturedProjection.get.toSet
+      assert(projectedFields == Set("id", "value"),
+        s"Expected projection with exactly {id, value}, got {${projectedFields.mkString(", ")}}")
+
+      // Verify filter pushed
+      val capturedFilter = TestServerSidePlanningClient.getCapturedFilter
+      assert(capturedFilter.isDefined, "Filter should be pushed down")
+      val leafFilters = collectLeafFilters(capturedFilter.get)
+      val gtFilter = leafFilters.collectFirst {
+        case gt: GreaterThan if gt.attribute == "value" => gt
+      }
+      assert(gtFilter.isDefined, "Expected GreaterThan filter on 'value'")
+      assert(gtFilter.get.value == 10, s"Expected GreaterThan value 10, got ${gtFilter.get.value}")
+
+      // Verify limit pushed
+      val capturedLimit = TestServerSidePlanningClient.getCapturedLimit
+      assert(capturedLimit.isDefined, "Limit should be pushed down")
+      assert(capturedLimit.get == 5, s"Expected limit 5, got ${capturedLimit.get}")
+    }
+  }
 }
