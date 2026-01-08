@@ -171,17 +171,25 @@ public class IcebergRESTServer {
   }
 
   /**
+   * Get the min-rows-requested captured from the most recent /plan request.
+   * Delegates to adapter. For test verification.
+   */
+  public Long getCapturedLimit() {
+    return IcebergRESTCatalogAdapterWithPlanSupport.getCapturedMinRowsRequested();
+  }
+
+  /**
    * Set test credentials to inject into /plan responses.
    * Used for testing credential extraction in clients.
-   * 
+   *
    * @param credentials Map of credential config (e.g., "s3.access-key-id" -> "...")
    */
   public void setTestCredentials(Map<String, String> credentials) {
     IcebergRESTCatalogAdapterWithPlanSupport.setTestCredentials(credentials);
   }
-  
+
   /**
-   * Clear captured filter and projection. Call between tests.
+   * Clear captured filter, projection, limit, and credentials. Call between tests.
    */
   public void clearCaptured() {
     IcebergRESTCatalogAdapterWithPlanSupport.clearCaptured();
