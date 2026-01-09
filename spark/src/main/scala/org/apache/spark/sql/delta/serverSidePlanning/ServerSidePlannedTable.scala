@@ -285,7 +285,10 @@ class ServerSidePlannedScan(
 
   // Call the server-side planning API to get the scan plan with files AND credentials
   private val scanPlan: ScanPlan = planningClient.planScan(
-    databaseName, tableName, combinedFilter, projectionColumnNames)
+    databaseName,
+    tableName,
+    combinedFilter,
+    projectionColumnNames)
 
   override def planInputPartitions(): Array[InputPartition] = {
     // Convert each file to an InputPartition
@@ -320,7 +323,7 @@ class ServerSidePlannedFilePartitionReaderFactory(
     spark: SparkSession,
     tableSchema: StructType,
     requiredSchema: StructType,
-    credentials: Option[StorageCredentials])
+    credentials: Option[ScanPlanStorageCredentials])
     extends PartitionReaderFactory {
 
   import org.apache.spark.util.SerializableConfiguration
