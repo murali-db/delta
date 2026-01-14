@@ -90,7 +90,8 @@ private[serverSidePlanning] trait ServerSidePlanningClientFactory {
  * unregistered and server-side planning will not be available.
  *
  * To register a custom factory implementation:
- * 1. Create META-INF/services/org.apache.spark.sql.delta.serverSidePlanning.ServerSidePlanningClientFactory
+ * 1. Create META-INF/services/org.apache.spark.sql.delta.serverSidePlanning.
+ *    ServerSidePlanningClientFactory
  * 2. Add your implementation's fully-qualified class name to the file
  * 3. Ensure your JAR is on the classpath
  */
@@ -126,10 +127,12 @@ private[serverSidePlanning] object ServerSidePlanningClientFactory {
 
         // Optional: Warn if multiple implementations found
         if (factories.size > 1) {
+          // scalastyle:off println
           System.err.println(
             s"[Delta] Warning: Multiple ServerSidePlanningClientFactory implementations found. " +
             s"Using ${factories.head.getClass.getName}. " +
             s"Others: ${factories.tail.map(_.getClass.getName).mkString(", ")}")
+          // scalastyle:on println
         }
       } else {
         // No factories discovered - delta-iceberg not on classpath
@@ -141,8 +144,10 @@ private[serverSidePlanning] object ServerSidePlanningClientFactory {
       case e: Exception =>
         // Unexpected error during service loading - log but don't fail
         // Delta should still work for non-FGAC tables
+        // scalastyle:off println
         System.err.println(
           s"[Delta] Warning: Failed to auto-discover server-side planning factory: ${e.getMessage}")
+        // scalastyle:on println
     }
   }
   // ========== END SERVICE LOADER AUTO-REGISTRATION ==========
