@@ -191,8 +191,13 @@ class IcebergRESTCatalogPlanningClient(
     // (e.g., {ucUri}/api/2.1/unity-catalog/iceberg-rest/v1/{prefix}).
     // For other catalogs, the endpoint is passed directly via metadata.
     // See: https://iceberg.apache.org/rest-catalog-spec/
-    val planTableScanUri =
-      s"$icebergRestCatalogUriRoot/v1/namespaces/$database/tables/$table/plan"
+    // Note: icebergRestCatalogUriRoot already includes /v1/ prefix, so don't duplicate it
+    val planTableScanUri = s"$icebergRestCatalogUriRoot/namespaces/$database/tables/$table" +
+      "/plan?implementation=MATERIALIZED_PARQUET"
+
+    // scalastyle:off println
+    System.err.println(s"[FGAC-DEBUG] Plan endpoint URI: $planTableScanUri")
+    // scalastyle:on println
 
     // Request planning for current snapshot. snapshotId = 0 means "use current snapshot"
     // in the Iceberg REST API spec. Time-travel queries are not yet supported.
@@ -228,6 +233,15 @@ class IcebergRESTCatalogPlanningClient(
     }
     val httpPost = new HttpPost(planTableScanUri)
     httpPost.setEntity(new StringEntity(requestJson, ContentType.APPLICATION_JSON))
+
+    // scalastyle:off println
+    System.err.println(s"[FGAC-DEBUG] POST Request Body:\n$requestJson")
+    System.err.println(s"[FGAC-DEBUG] Request Headers:")
+    httpHeaders.asScala.foreach { header =>
+      System.err.println(s"  ${header.getName}: ${header.getValue}")
+    }
+    // scalastyle:on println
+
     // TODO: Add retry logic for transient HTTP failures (e.g., connection timeouts, 5xx errors)
     val httpResponse = httpClient.execute(httpPost)
 
@@ -239,6 +253,14 @@ class IcebergRESTCatalogPlanningClient(
     try {
       val statusCode = httpResponse.getStatusLine.getStatusCode
       val responseBody = EntityUtils.toString(httpResponse.getEntity)
+
+      // scalastyle:off println
+      System.err.println(s"[FGAC-DEBUG] Response Status: $statusCode")
+      if (statusCode != HttpStatus.SC_OK && statusCode != HttpStatus.SC_CREATED) {
+        System.err.println(s"[FGAC-DEBUG] Error Response Body:\n$responseBody")
+      }
+      // scalastyle:on println
+
       if (statusCode == HttpStatus.SC_OK || statusCode == HttpStatus.SC_CREATED) {
         // Parse response with caseSensitive=false to match request and Spark's case-insensitive
         // column handling
