@@ -84,14 +84,82 @@ private[serverSidePlanning] trait ServerSidePlanningClientFactory {
  * Registry for client factories. Can be configured for testing or to provide
  * production implementations (e.g., IcebergRESTCatalogPlanningClientFactory).
  *
- * By default, no factory is registered. Production code should register an appropriate
- * factory implementation before attempting to create clients.
+ * The factory is auto-discovered and registered using Java's ServiceLoader mechanism.
+ * When delta-iceberg JAR is on the classpath, IcebergRESTCatalogPlanningClientFactory
+ * is automatically registered. If delta-iceberg is not present, the factory remains
+ * unregistered and server-side planning will not be available.
+ *
+ * To register a custom factory implementation:
+ * 1. Create META-INF/services/org.apache.spark.sql.delta.serverSidePlanning
+ *    .ServerSidePlanningClientFactory
+ * 2. Add your implementation's fully-qualified class name to the file
+ * 3. Ensure your JAR is on the classpath
  */
 private[serverSidePlanning] object ServerSidePlanningClientFactory {
   @volatile private var registeredFactory: Option[ServerSidePlanningClientFactory] = None
 
+  // ========== SERVICE LOADER AUTO-REGISTRATION ==========
+  // This block runs ONCE when ServerSidePlanningClientFactory is first accessed.
+  // It uses Java's ServiceLoader to discover and register factories declared in
+  // META-INF/services/org.apache.spark.sql.delta.serverSidePlanning.ServerSidePlanningClientFactory
+  {
+    import java.util.ServiceLoader
+    import scala.jdk.CollectionConverters._
+
+    try {
+      // Use ServiceLoader to discover all implementations on the classpath
+      val loader = ServiceLoader.load(
+        classOf[ServerSidePlanningClientFactory],
+        Thread.currentThread().getContextClassLoader)
+
+      // Convert Java Iterator to Scala and collect all factories
+      val factories = loader.iterator().asScala.toList
+
+      if (factories.nonEmpty) {
+        // Use the first discovered factory
+        // In practice, there should only be one (IcebergRESTCatalogPlanningClientFactory)
+        registeredFactory = Some(factories.head)
+
+        // Optional: Log successful registration for debugging
+        // Uncomment for visibility during development
+        // System.err.println(s"[Delta] Auto-registered ${factories.head.getClass.getName} " +
+        //   s"via ServiceLoader (found ${factories.size} implementation(s))")
+
+        // Optional: Warn if multiple implementations found
+        if (factories.size > 1) {
+          // scalastyle:off println
+          System.err.println(
+            s"[Delta] Warning: Multiple ServerSidePlanningClientFactory implementations found. " +
+            s"Using ${factories.head.getClass.getName}. " +
+            s"Others: ${factories.tail.map(_.getClass.getName).mkString(", ")}")
+          // scalastyle:on println
+        }
+      } else {
+        // No factories discovered - delta-iceberg not on classpath
+        // This is fine, server-side planning just won't be available
+        // System.err.println("[Delta] No ServerSidePlanningClientFactory found, FGAC disabled")
+      }
+
+    } catch {
+      case e: Exception =>
+        // Unexpected error during service loading - log but don't fail
+        // Delta should still work for non-FGAC tables
+        // scalastyle:off println
+        System.err.println(
+          s"[Delta] Warning: Failed to auto-discover server-side planning factory: ${e.getMessage}")
+        // scalastyle:on println
+    }
+  }
+  // ========== END SERVICE LOADER AUTO-REGISTRATION ==========
+
   /**
    * Set a factory for production use or testing.
+   * This overrides any auto-registered factory.
+   *
+   * Useful for:
+   * - Testing with mock implementations
+   * - Programmatically configuring a specific factory
+   * - Overriding the ServiceLoader-discovered factory
    */
   private[serverSidePlanning] def setFactory(factory: ServerSidePlanningClientFactory): Unit = {
     registeredFactory = Some(factory)
@@ -99,6 +167,7 @@ private[serverSidePlanning] object ServerSidePlanningClientFactory {
 
   /**
    * Clear the registered factory.
+   * Useful for testing to reset state between tests.
    */
   private[serverSidePlanning] def clearFactory(): Unit = {
     registeredFactory = None
@@ -107,17 +176,45 @@ private[serverSidePlanning] object ServerSidePlanningClientFactory {
   /**
    * Get the currently registered factory.
    * Throws IllegalStateException if no factory has been registered.
+   *
+   * @throws IllegalStateException if no factory is available
    */
   def getFactory(): ServerSidePlanningClientFactory = {
     registeredFactory.getOrElse {
       throw new IllegalStateException(
         "No ServerSidePlanningClientFactory has been registered. " +
-        "Call ServerSidePlanningClientFactory.setFactory() to register an implementation.")
+        "To enable FGAC support, ensure delta-iceberg JAR is on the classpath, " +
+        "or call ServerSidePlanningClientFactory.setFactory() manually.")
     }
   }
 
   /**
+   * Check if a factory is registered.
+   * Useful for feature detection and testing.
+   *
+   * @return true if a factory is available, false otherwise
+   */
+  def isFactoryRegistered(): Boolean = {
+    registeredFactory.isDefined
+  }
+
+  /**
+   * Get information about the registered factory.
+   * Returns None if no factory is registered.
+   *
+   * @return Optional factory class name
+   */
+  def getFactoryInfo(): Option[String] = {
+    registeredFactory.map(_.getClass.getName)
+  }
+
+  /**
    * Convenience method to create a client from metadata using the registered factory.
+   *
+   * @param spark The SparkSession
+   * @param metadata Metadata for configuring the client
+   * @return A configured ServerSidePlanningClient
+   * @throws IllegalStateException if no factory is registered
    */
   def buildClient(
       spark: SparkSession,

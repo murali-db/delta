@@ -317,6 +317,10 @@ class ServerSidePlannedScan(
 
   override def toBatch: Batch = this
 
+  override def columnarSupportMode(): Scan.ColumnarSupportMode = {
+    Scan.ColumnarSupportMode.UNSUPPORTED
+  }
+
   // Convert pushed filters to a single Spark Filter for the API call.
   // If no filters, pass None. If filters exist, combine them into a single filter.
   private val combinedFilter: Option[Filter] = {
@@ -332,11 +336,12 @@ class ServerSidePlannedScan(
 
   // Only pass projection if columns are actually pruned (not SELECT *)
   // Extract field names for planning client (server only needs names, not types)
+  // Wrap each column name in backticks to handle dots in column names
   private val projectionColumnNames: Option[Seq[String]] = {
     if (requiredSchema.fieldNames.toSet == tableSchema.fieldNames.toSet) {
       None
     } else {
-      Some(requiredSchema.fieldNames.toSeq)
+      Some(requiredSchema.fieldNames.map(name => s"`$name`").toSeq)
     }
   }
 
