@@ -367,7 +367,8 @@ class ServerSidePlannedScan(
 case class ServerSidePlannedFileInputPartition(
     filePath: String,
     fileSizeInBytes: Long,
-    fileFormat: String) extends InputPartition
+    fileFormat: String,
+    credentialId: Option[String] = None) extends InputPartition
 
 /**
  * Factory for creating PartitionReaders that read server-side planned files.
@@ -386,6 +387,10 @@ class ServerSidePlannedFilePartitionReaderFactory(
 
   import org.apache.spark.util.SerializableConfiguration
 
+  // Store credential ID for thread-local setting in readers
+  // NOT transient - needs to be serialized and sent to executors
+  private var s3CredentialId: Option[String] = None
+
   // scalastyle:off deltahadoopconfiguration
   // We use sessionState.newHadoopConf() here instead of deltaLog.newDeltaHadoopConf().
   // This means DataFrame options (like custom S3 credentials) passed by users will NOT be
@@ -403,61 +408,50 @@ class ServerSidePlannedFilePartitionReaderFactory(
     val conf = spark.sessionState.newHadoopConf()
 
     // Disable S3A FileSystem caching to prevent credential conflicts in joins
-    // and successive queries. This forces Hadoop to create a new FS instance
-    // per file operation, ensuring fresh credentials are always used.
-    // Trade-off: Performance overhead (new FS initialization per file) but
-    // correctness is more important for FGAC tables.
+    // and successive queries. Each scan will have a unique credential ID in the
+    // configuration, which will force Hadoop to create a new FS instance.
+    // Combined with DynamicAwsCredentialsProvider that never caches credentials,
+    // this ensures fresh credentials are always used from the registry.
     conf.set("fs.s3a.impl.disable.cache", "true")
-
-    // Force S3 connection pool to not reuse connections with old credentials
-    // Set connection TTL to 0 to expire connections immediately
-    conf.set("fs.s3a.connection.ttl", "0")
-
-    // Disable connection pooling to force fresh connections with fresh credentials
-    conf.set("fs.s3a.connection.maximum", "1")
-
-    // Explicitly set credential provider to force new instance creation
-    // TemporaryAWSCredentialsProvider will be instantiated fresh for this config
-    conf.set("fs.s3a.aws.credentials.provider",
-      "org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider")
 
     // scalastyle:off println
     System.err.println(s"[UC-SSP] Disabled S3A FileSystem caching (fs.s3a.impl.disable.cache=true)")
-    System.err.println(s"[UC-SSP] Set S3 connection TTL=0, max connections=1")
-    System.err.println(s"[UC-SSP] Set credential provider: TemporaryAWSCredentialsProvider")
     // scalastyle:on println
 
     // Inject temporary credentials from IRC server response
     credentials.foreach { creds =>
       creds match {
         case S3Credentials(accessKeyId, secretAccessKey, sessionToken) =>
-          // Check what credentials are in the config BEFORE we set new ones
-          val oldAccessKey = Option(conf.get("fs.s3a.access.key")).getOrElse("(not set)")
-          val oldSessionToken = Option(conf.get("fs.s3a.session.token"))
-            .map(_.take(20) + "...").getOrElse("(not set)")
+          // Register credentials in global registry and get unique UUID
+          // This UUID will be different for each scan, forcing Hadoop to create
+          // new FileSystem instances even when fs.s3a.impl.disable.cache is true
+          val credentialId = CredentialRegistry.register(
+            accessKeyId = accessKeyId,
+            secretAccessKey = secretAccessKey,
+            sessionToken = sessionToken,
+            ttlMs = 60 * 60 * 1000L  // 1 hour TTL
+          )
+
+          // Store credential ID for thread-local setting in partition readers
+          s3CredentialId = Some(credentialId)
+
+          // Configure S3A to use our dynamic credentials provider
+          // This provider reads from the registry on EVERY S3 API call,
+          // ensuring credentials are never cached within the AWS SDK
+          conf.set("fs.s3a.aws.credentials.provider",
+            "org.apache.spark.sql.delta.serverSidePlanning.DynamicAwsCredentialsProvider")
+
+          // Set credential ID so the provider can look it up in the registry
+          // This UUID becomes part of the Hadoop Configuration content,
+          // which means different credentials get different cache keys
+          conf.set("fs.s3a.credential.id", credentialId)
 
           // scalastyle:off println
-          System.err.println(s"[UC-SSP] BEFORE setting credentials:")
-          System.err.println(s"[UC-SSP]   OLD fs.s3a.access.key = $oldAccessKey")
-          System.err.println(s"[UC-SSP]   OLD fs.s3a.session.token = $oldSessionToken")
-          System.err.println(s"[UC-SSP] Injecting NEW S3 credentials:")
-          System.err.println(s"[UC-SSP]   NEW fs.s3a.access.key = $accessKeyId")
-          System.err.println(s"[UC-SSP]   NEW fs.s3a.secret.key = [REDACTED]")
-          System.err.println(s"[UC-SSP]   NEW fs.s3a.session.token = ${sessionToken.take(20)}...")
-          // scalastyle:on println
-
-          conf.set("fs.s3a.access.key", accessKeyId)
-          conf.set("fs.s3a.secret.key", secretAccessKey)
-          conf.set("fs.s3a.session.token", sessionToken)
-
-          // Verify credentials were actually set in the config
-          val afterAccessKey = conf.get("fs.s3a.access.key")
-          val afterSessionToken = conf.get("fs.s3a.session.token").take(20) + "..."
-
-          // scalastyle:off println
-          System.err.println(s"[UC-SSP] AFTER setting credentials:")
-          System.err.println(s"[UC-SSP]   ACTUAL fs.s3a.access.key = $afterAccessKey")
-          System.err.println(s"[UC-SSP]   ACTUAL fs.s3a.session.token = $afterSessionToken")
+          System.err.println(s"[UC-SSP] Registered credentials in registry:")
+          System.err.println(s"[UC-SSP]   Credential ID = $credentialId")
+          System.err.println(s"[UC-SSP]   Access Key = ${accessKeyId.take(8)}...")
+          System.err.println(s"[UC-SSP]   Session Token = ${sessionToken.take(20)}...")
+          System.err.println(s"[UC-SSP]   Credential Provider = DynamicAwsCredentialsProvider")
           // scalastyle:on println
 
         case AzureCredentials(accountName, sasToken, containerName) =>
@@ -509,7 +503,7 @@ class ServerSidePlannedFilePartitionReaderFactory(
         s"File format '${filePartition.fileFormat}' is not supported. Only Parquet is supported.")
     }
 
-    new ServerSidePlannedFilePartitionReader(filePartition, parquetReaderBuilder)
+    new ServerSidePlannedFilePartitionReader(filePartition, parquetReaderBuilder, s3CredentialId)
   }
 }
 
@@ -519,7 +513,8 @@ class ServerSidePlannedFilePartitionReaderFactory(
  */
 class ServerSidePlannedFilePartitionReader(
     partition: ServerSidePlannedFileInputPartition,
-    readerBuilder: PartitionedFile => Iterator[InternalRow])
+    readerBuilder: PartitionedFile => Iterator[InternalRow],
+    credentialId: Option[String])
     extends PartitionReader[InternalRow] {
 
   // Create PartitionedFile for this file
@@ -532,8 +527,17 @@ class ServerSidePlannedFilePartitionReader(
 
   // Call the pre-built reader function with our PartitionedFile
   // This happens on the executor and doesn't need SparkSession
+  // Set thread-local credential ID before calling reader (for Dynamic...Provider)
   private lazy val readerIterator: Iterator[InternalRow] = {
-    readerBuilder(partitionedFile)
+    credentialId.foreach { credId =>
+      CredentialRegistry.setThreadLocalCredentialId(credId)
+    }
+    try {
+      readerBuilder(partitionedFile)
+    } finally {
+      // Note: We don't clear thread-local here because the iterator might be lazy
+      // and needs the credential ID when elements are actually read
+    }
   }
 
   override def next(): Boolean = {
