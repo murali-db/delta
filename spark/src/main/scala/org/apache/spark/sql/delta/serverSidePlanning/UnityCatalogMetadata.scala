@@ -127,7 +127,10 @@ case class UnityCatalogMetadata(
 
     prefix match {
       case Some(p) => s"$icebergRestBase/v1/$p"
-      case None => icebergRestBase
+      case None =>
+        // Fallback: construct prefix from catalog name
+        // Unity Catalog requires: {base}/v1/catalogs/{catalog}/namespaces/{db}/tables/{table}/plan
+        s"$icebergRestBase/v1/catalogs/$catalogName"
     }
   }
 }
@@ -138,10 +141,13 @@ object UnityCatalogMetadata {
       spark: SparkSession,
       ident: Identifier): UnityCatalogMetadata = {
 
+    // Get the catalog name from the identifier if it's a 3-part name (catalog.schema.table),
+    // otherwise use the current catalog from the session
     val catalogName = if (ident.namespace().length > 1) {
       ident.namespace().head
     } else {
-      "spark_catalog"
+      // Use current catalog from session instead of defaulting to "spark_catalog"
+      spark.sessionState.catalogManager.currentCatalog.name()
     }
 
     // Read UC configuration from Spark conf
