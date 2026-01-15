@@ -16,13 +16,11 @@
 
 package org.apache.spark.sql.delta.serverSidePlanning
 
-import java.security.PrivilegedExceptionAction
 import java.util
 import java.util.Locale
 
 import scala.collection.JavaConverters._
 
-import org.apache.hadoop.security.UserGroupInformation
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
@@ -388,12 +386,6 @@ class ServerSidePlannedFilePartitionReaderFactory(
 
   import org.apache.spark.util.SerializableConfiguration
 
-  // Generate unique UUID for this scan plan to force different FileSystem cache keys
-  // This UUID will be used as a fake "user" in UGI.doAs() to differentiate credentials
-  private val credentialUUID: Option[String] = credentials.map { _ =>
-    java.util.UUID.randomUUID().toString
-  }
-
   // scalastyle:off deltahadoopconfiguration
   // We use sessionState.newHadoopConf() here instead of deltaLog.newDeltaHadoopConf().
   // This means DataFrame options (like custom S3 credentials) passed by users will NOT be
@@ -456,7 +448,7 @@ class ServerSidePlannedFilePartitionReaderFactory(
         s"File format '${filePartition.fileFormat}' is not supported. Only Parquet is supported.")
     }
 
-    new ServerSidePlannedFilePartitionReader(filePartition, parquetReaderBuilder, credentialUUID)
+    new ServerSidePlannedFilePartitionReader(filePartition, parquetReaderBuilder)
   }
 }
 
@@ -466,8 +458,7 @@ class ServerSidePlannedFilePartitionReaderFactory(
  */
 class ServerSidePlannedFilePartitionReader(
     partition: ServerSidePlannedFileInputPartition,
-    readerBuilder: PartitionedFile => Iterator[InternalRow],
-    credentialUUID: Option[String])
+    readerBuilder: PartitionedFile => Iterator[InternalRow])
     extends PartitionReader[InternalRow] {
 
   // Create PartitionedFile for this file
@@ -480,26 +471,8 @@ class ServerSidePlannedFilePartitionReader(
 
   // Call the pre-built reader function with our PartitionedFile
   // This happens on the executor and doesn't need SparkSession
-  // Wrap in UGI.doAs() with unique UUID to force different FileSystem cache keys
   private lazy val readerIterator: Iterator[InternalRow] = {
-    credentialUUID match {
-      case Some(uuid) =>
-        // Create a fake remote user with the UUID as username
-        // This forces a different FileSystem cache key (scheme, authority, UGI, unique)
-        // Different UGI → cache miss → new FS instance → fresh credentials from Configuration
-        val ugi = UserGroupInformation.createRemoteUser(uuid)
-
-        // Execute file reading as this fake user
-        ugi.doAs(new PrivilegedExceptionAction[Iterator[InternalRow]] {
-          override def run(): Iterator[InternalRow] = {
-            readerBuilder(partitionedFile)
-          }
-        })
-
-      case None =>
-        // No credentials, read as normal user
-        readerBuilder(partitionedFile)
-    }
+    readerBuilder(partitionedFile)
   }
 
   override def next(): Boolean = {
