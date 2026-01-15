@@ -81,20 +81,20 @@ class IcebergRESTCatalogPlanningClient(
 
   /**
    * Build User-Agent header with Delta, Spark, Java and Scala version information.
-   * Format: "Delta/<version> Spark/<version> Java/<version> Scala/<version>"
-   * Example: "Delta/4.0.0 Spark/3.5.0 Java/17.0.10 Scala/2.12.18"
+   * Format: "Delta-Lake/<version> Apache-Spark/<version> Java/<version> Scala/<version>"
+   * Example: "Delta-Lake/4.0.0 Apache-Spark/3.5.0 Java/17.0.10 Scala/2.12.18"
    */
   private def buildUserAgent(): String = {
     val deltaVersion = getDeltaVersion().getOrElse("unknown")
     val sparkVersion = getSparkVersion().getOrElse("unknown")
     val javaVersion = getJavaVersion()
     val scalaVersion = getScalaVersion()
-    s"Delta/$deltaVersion Spark/$sparkVersion Java/$javaVersion Scala/$scalaVersion"
+    s"Delta-Lake/$deltaVersion Apache-Spark/$sparkVersion Java/$javaVersion Scala/$scalaVersion"
   }
 
   /**
    * Get the User-Agent header value used by this client.
-   * Format: "Delta/<version> Spark/<version> Java/<version> Scala/<version>"
+   * Format: "Delta-Lake/<version> Apache-Spark/<version> Java/<version> Scala/<version>"
    *
    * @return The User-Agent string used in HTTP requests
    */
@@ -191,8 +191,13 @@ class IcebergRESTCatalogPlanningClient(
     // (e.g., {ucUri}/api/2.1/unity-catalog/iceberg-rest/v1/{prefix}).
     // For other catalogs, the endpoint is passed directly via metadata.
     // See: https://iceberg.apache.org/rest-catalog-spec/
-    val planTableScanUri =
-      s"$icebergRestCatalogUriRoot/v1/namespaces/$database/tables/$table/plan"
+    // Add implementation=MATERIALIZED_PARQUET for Unity Catalog server-side planning
+    val planTableScanUri = s"$icebergRestCatalogUriRoot/namespaces/$database/tables/$table" +
+      "/plan?implementation=MATERIALIZED_PARQUET"
+
+    // scalastyle:off println
+    System.err.println(s"[UC-SSP] POST request to: $planTableScanUri")
+    // scalastyle:on println
 
     // Request planning for current snapshot. snapshotId = 0 means "use current snapshot"
     // in the Iceberg REST API spec. Time-travel queries are not yet supported.
@@ -226,6 +231,11 @@ class IcebergRESTCatalogPlanningClient(
       case None =>
         PlanTableScanRequestParser.toJson(request)
     }
+
+    // scalastyle:off println
+    System.err.println(s"[UC-SSP] POST request body: $requestJson")
+    // scalastyle:on println
+
     val httpPost = new HttpPost(planTableScanUri)
     httpPost.setEntity(new StringEntity(requestJson, ContentType.APPLICATION_JSON))
     // TODO: Add retry logic for transient HTTP failures (e.g., connection timeouts, 5xx errors)
@@ -239,6 +249,12 @@ class IcebergRESTCatalogPlanningClient(
     try {
       val statusCode = httpResponse.getStatusLine.getStatusCode
       val responseBody = EntityUtils.toString(httpResponse.getEntity)
+
+      // scalastyle:off println
+      System.err.println(s"[UC-SSP] Response status: $statusCode")
+      System.err.println(s"[UC-SSP] Response body: $responseBody")
+      // scalastyle:on println
+
       if (statusCode == HttpStatus.SC_OK || statusCode == HttpStatus.SC_CREATED) {
         // Parse response with caseSensitive=false to match request and Spark's case-insensitive
         // column handling

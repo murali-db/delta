@@ -70,8 +70,16 @@ case class UnityCatalogMetadata(
    */
   private def fetchCatalogConfig(): Option[CatalogConfigResponse] = {
     try {
-      val icebergRestBase = s"$baseUri/api/2.1/unity-catalog/iceberg-rest"
+      // Check if base already contains /api/2.1/unity-catalog
+      val icebergRestBase = if (baseUri.contains("/api/2.1/unity-catalog")) {
+        s"$baseUri/iceberg-rest"
+      } else {
+        s"$baseUri/api/2.1/unity-catalog/iceberg-rest"
+      }
       val configUri = s"$icebergRestBase/v1/config"
+      // scalastyle:off println
+      System.err.println(s"[UC-SSP] Calling config endpoint: $configUri")
+      // scalastyle:on println
       val httpClient = HttpClientBuilder.create().build()
       try {
         val httpGet = new HttpGet(configUri)
@@ -81,10 +89,20 @@ case class UnityCatalogMetadata(
         }
         val response = httpClient.execute(httpGet)
         try {
-          if (response.getStatusLine.getStatusCode == HttpStatus.SC_OK) {
+          val statusCode = response.getStatusLine.getStatusCode
+          // scalastyle:off println
+          System.err.println(s"[UC-SSP] Config endpoint status: $statusCode")
+          // scalastyle:on println
+          if (statusCode == HttpStatus.SC_OK) {
             val body = EntityUtils.toString(response.getEntity)
+            // scalastyle:off println
+            System.err.println(s"[UC-SSP] Config response: $body")
+            // scalastyle:on println
             Some(JsonUtils.fromJson[CatalogConfigResponse](body))
           } else {
+            // scalastyle:off println
+            System.err.println(s"[UC-SSP] Config endpoint failed, using catalog name fallback")
+            // scalastyle:on println
             None // Fallback to simple path
           }
         } finally {
@@ -94,41 +112,52 @@ case class UnityCatalogMetadata(
         httpClient.close()
       }
     } catch {
-      case _: Exception => None // Fallback to simple path on any error
+      case ex: Exception =>
+        // scalastyle:off println
+        System.err.println(s"[UC-SSP] Config endpoint exception: ${ex.getMessage}")
+        // scalastyle:on println
+        None // Fallback to simple path on any error
     }
   }
 
   /**
    * Construct Iceberg REST catalog endpoint for server-side planning.
    *
-   * This implementation follows the Iceberg REST catalog spec:
-   * 1. Calls GET {icebergRestBase}/v1/config to retrieve catalog configuration
-   * 2. Extracts optional "prefix" from config.overrides (e.g., "catalogs/my-catalog")
-   * 3. If prefix exists, includes it in the endpoint: {icebergRestBase}/v1/{prefix}
-   * 4. If prefix is missing or config call fails, uses simple path: {icebergRestBase}
+   * Handles two cases:
+   * 1. ucUri with full path: https://host/api/2.1/unity-catalog
+   *    -> Use iceberg-rest subpath: https://host/api/2.1/unity-catalog/iceberg-rest
+   * 2. ucUri with just host: https://host
+   *    -> Add full path: https://host/api/2.1/unity-catalog/iceberg-rest
    *
-   * Examples:
-   * - Without prefix:
-   *   https://unity-catalog-server.example.com/api/2.1/unity-catalog/iceberg-rest
-   * - With prefix:
-   *   https://unity-catalog-server.example.com/api/2.1/unity-catalog/iceberg-rest/
-   *   v1/catalogs/my-catalog
-   *
-   * See: https://iceberg.apache.org/rest-catalog-spec/
-   *
-   * Note: Multi-tenant hierarchies (AWS Glue, S3 Tables) are not yet handled.
+   * Then appends the catalog-specific prefix from config or uses catalog name as fallback.
    */
   private def constructPlanEndpoint(ucUri: String): String = {
     val base = baseUri
-    val icebergRestBase = s"$base/api/2.1/unity-catalog/iceberg-rest"
+
+    // Check if base already contains /api/2.1/unity-catalog
+    val icebergRestBase = if (base.contains("/api/2.1/unity-catalog")) {
+      s"$base/iceberg-rest"
+    } else {
+      s"$base/api/2.1/unity-catalog/iceberg-rest"
+    }
 
     // Try to get prefix from config
     val prefix = catalogConfig.flatMap(_.overrides.get("prefix"))
 
-    prefix match {
+    val endpoint = prefix match {
       case Some(p) => s"$icebergRestBase/v1/$p"
-      case None => icebergRestBase
+      case None =>
+        // Fallback: construct prefix from catalog name
+        // Example working endpoint:
+        // https://e2-dogfood.staging.cloud.databricks.com/api/2.1/
+        // unity-catalog/iceberg-rest/v1/catalogs/migration_bugbash/namespaces/.../
+        // tables/.../plan?implementation=MATERIALIZED_PARQUET
+        s"$icebergRestBase/v1/catalogs/$catalogName"
     }
+    // scalastyle:off println
+    System.err.println(s"[UC-SSP] Constructed endpoint: $endpoint")
+    // scalastyle:on println
+    endpoint
   }
 }
 
@@ -138,10 +167,13 @@ object UnityCatalogMetadata {
       spark: SparkSession,
       ident: Identifier): UnityCatalogMetadata = {
 
+    // Get the catalog name from the identifier if it's a 3-part name (catalog.schema.table),
+    // otherwise use the current catalog from the session
     val catalogName = if (ident.namespace().length > 1) {
       ident.namespace().head
     } else {
-      "spark_catalog"
+      // Use current catalog from session instead of defaulting to "spark_catalog"
+      spark.sessionState.catalogManager.currentCatalog.name()
     }
 
     // Read UC configuration from Spark conf

@@ -395,22 +395,83 @@ class ServerSidePlannedFilePartitionReaderFactory(
   //   from deltaLog.newDeltaHadoopConf()
   // - General Spark options from spark.hadoop.* are included and work for all tables
   private val hadoopConf = {
+    // scalastyle:off println
+    System.err.println(s"[UC-SSP] Creating hadoopConf in ReaderFactory " +
+      s"(Thread: ${Thread.currentThread().getName})")
+    // scalastyle:on println
+
     val conf = spark.sessionState.newHadoopConf()
+
+    // Disable S3A FileSystem caching to prevent credential conflicts in joins
+    // and successive queries. This forces Hadoop to create a new FS instance
+    // per file operation, ensuring fresh credentials are always used.
+    // Trade-off: Performance overhead (new FS initialization per file) but
+    // correctness is more important for FGAC tables.
+    conf.set("fs.s3a.impl.disable.cache", "true")
+
+    // Force S3 connection pool to not reuse connections with old credentials
+    // Set connection TTL to 0 to expire connections immediately
+    conf.set("fs.s3a.connection.ttl", "0")
+
+    // Disable connection pooling to force fresh connections with fresh credentials
+    conf.set("fs.s3a.connection.maximum", "1")
+
+    // Explicitly set credential provider to force new instance creation
+    // TemporaryAWSCredentialsProvider will be instantiated fresh for this config
+    conf.set("fs.s3a.aws.credentials.provider",
+      "org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider")
+
+    // scalastyle:off println
+    System.err.println(s"[UC-SSP] Disabled S3A FileSystem caching (fs.s3a.impl.disable.cache=true)")
+    System.err.println(s"[UC-SSP] Set S3 connection TTL=0, max connections=1")
+    System.err.println(s"[UC-SSP] Set credential provider: TemporaryAWSCredentialsProvider")
+    // scalastyle:on println
 
     // Inject temporary credentials from IRC server response
     credentials.foreach { creds =>
       creds match {
         case S3Credentials(accessKeyId, secretAccessKey, sessionToken) =>
+          // Check what credentials are in the config BEFORE we set new ones
+          val oldAccessKey = Option(conf.get("fs.s3a.access.key")).getOrElse("(not set)")
+          val oldSessionToken = Option(conf.get("fs.s3a.session.token"))
+            .map(_.take(20) + "...").getOrElse("(not set)")
+
+          // scalastyle:off println
+          System.err.println(s"[UC-SSP] BEFORE setting credentials:")
+          System.err.println(s"[UC-SSP]   OLD fs.s3a.access.key = $oldAccessKey")
+          System.err.println(s"[UC-SSP]   OLD fs.s3a.session.token = $oldSessionToken")
+          System.err.println(s"[UC-SSP] Injecting NEW S3 credentials:")
+          System.err.println(s"[UC-SSP]   NEW fs.s3a.access.key = $accessKeyId")
+          System.err.println(s"[UC-SSP]   NEW fs.s3a.secret.key = [REDACTED]")
+          System.err.println(s"[UC-SSP]   NEW fs.s3a.session.token = ${sessionToken.take(20)}...")
+          // scalastyle:on println
+
           conf.set("fs.s3a.access.key", accessKeyId)
           conf.set("fs.s3a.secret.key", secretAccessKey)
           conf.set("fs.s3a.session.token", sessionToken)
 
+          // Verify credentials were actually set in the config
+          val afterAccessKey = conf.get("fs.s3a.access.key")
+          val afterSessionToken = conf.get("fs.s3a.session.token").take(20) + "..."
+
+          // scalastyle:off println
+          System.err.println(s"[UC-SSP] AFTER setting credentials:")
+          System.err.println(s"[UC-SSP]   ACTUAL fs.s3a.access.key = $afterAccessKey")
+          System.err.println(s"[UC-SSP]   ACTUAL fs.s3a.session.token = $afterSessionToken")
+          // scalastyle:on println
+
         case AzureCredentials(accountName, sasToken, containerName) =>
           // Format: fs.azure.sas.<container>.<account>.dfs.core.windows.net
           val sasKey = s"fs.azure.sas.$containerName.$accountName.dfs.core.windows.net"
+          // scalastyle:off println
+          System.err.println(s"[UC-SSP] Injecting Azure credentials for container: $containerName")
+          // scalastyle:on println
           conf.set(sasKey, sasToken)
 
         case GcsCredentials(oauth2Token) =>
+          // scalastyle:off println
+          System.err.println(s"[UC-SSP] Injecting GCS credentials")
+          // scalastyle:on println
           conf.set("fs.gs.auth.access.token", oauth2Token)
       }
     }
