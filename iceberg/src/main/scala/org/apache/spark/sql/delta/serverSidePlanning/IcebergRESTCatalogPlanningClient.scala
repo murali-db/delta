@@ -81,20 +81,20 @@ class IcebergRESTCatalogPlanningClient(
 
   /**
    * Build User-Agent header with Delta, Spark, Java and Scala version information.
-   * Format: "Delta/<version> Spark/<version> Java/<version> Scala/<version>"
-   * Example: "Delta/4.0.0 Spark/3.5.0 Java/17.0.10 Scala/2.12.18"
+   * Format: "Delta-Lake/<version> Apache-Spark/<version> Java/<version> Scala/<version>"
+   * Example: "Delta-Lake/4.0.0 Apache-Spark/3.5.0 Java/17.0.10 Scala/2.12.18"
    */
   private def buildUserAgent(): String = {
     val deltaVersion = getDeltaVersion().getOrElse("unknown")
     val sparkVersion = getSparkVersion().getOrElse("unknown")
     val javaVersion = getJavaVersion()
     val scalaVersion = getScalaVersion()
-    s"Delta/$deltaVersion Spark/$sparkVersion Java/$javaVersion Scala/$scalaVersion"
+    s"Delta-Lake/$deltaVersion Apache-Spark/$sparkVersion Java/$javaVersion Scala/$scalaVersion"
   }
 
   /**
    * Get the User-Agent header value used by this client.
-   * Format: "Delta/<version> Spark/<version> Java/<version> Scala/<version>"
+   * Format: "Delta-Lake/<version> Apache-Spark/<version> Java/<version> Scala/<version>"
    *
    * @return The User-Agent string used in HTTP requests
    */
