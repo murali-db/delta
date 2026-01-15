@@ -88,8 +88,8 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
 
   // Tests that the REST /plan endpoint returns the correct number of files for a non-empty table.
   // Creates a table, writes actual parquet files with data, then verifies the response includes
-  // them.
-  test("plan scan on non-empty table with data files") {
+  // them. Also tests credential vending via setTestCredentials().
+  test("plan scan on non-empty table with data files and credentials") {
     withTempTable("tableWithData") { table =>
       // Write data to the table using Spark
       val tableName = s"rest_catalog.${defaultNamespace}.tableWithData"
@@ -102,6 +102,13 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
         .format("iceberg")
         .mode("append")
         .save(tableName)
+
+      // Configure IRC server to return test credentials in /plan responses
+      server.setTestCredentials(
+        "test-access-key-123",
+        "test-secret-key-456",
+        "test-session-token-789"
+      )
 
       // Get the actual data files from the table metadata to verify against scan plan
       val expectedFiles = spark.sql(
@@ -127,6 +134,18 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
           s"Scan plan files don't match expected files.\n" +
             s"Expected: $expectedFiles\n" +
             s"Got: $scannedFiles")
+
+        // Verify credentials were returned in scan plan
+        assert(scanPlan.credentials.isDefined,
+          "Credentials should be present when server has test credentials configured")
+
+        val creds = scanPlan.credentials.get
+        assert(creds.accessKeyId == "test-access-key-123",
+          s"Expected access key 'test-access-key-123' but got '${creds.accessKeyId}'")
+        assert(creds.secretAccessKey == "test-secret-key-456",
+          s"Expected secret key 'test-secret-key-456' but got '${creds.secretAccessKey}'")
+        assert(creds.sessionToken == "test-session-token-789",
+          s"Expected session token 'test-session-token-789' but got '${creds.sessionToken}'")
       } finally {
         client.close()
       }
@@ -141,6 +160,67 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
   // 3. Verifies exception message contains "partition data"
   // This will test the client's partition validation logic at
   // IcebergRESTCatalogPlanningClient:160-164
+
+  // Tests credential extraction from a mock JSON response that includes storage credentials.
+  // This simulates what a UC Iceberg REST server would return when vending credentials.
+  test("credentials extracted from JSON response with storage-credentials") {
+    // Create a mock JSON response similar to what UC would return
+    // Using obviously fake credentials for testing
+    val mockJsonWithCredentials =
+      """{
+        |  "plan-status": "completed",
+        |  "file-scan-tasks": [],
+        |  "storage-credentials": [
+        |    {
+        |      "type": "aws",
+        |      "config": {
+        |        "s3.access-key-id": "test-access-key-123",
+        |        "s3.secret-access-key": "test-secret-key-456",
+        |        "s3.session-token": "test-session-token-789",
+        |        "s3.session-token-expires-at-ms": "1234567890000",
+        |        "client.region": "us-west-2"
+        |      }
+        |    }
+        |  ]
+        |}""".stripMargin
+
+    // Use reflection to call the private extractCredentials method
+    val client = new IcebergRESTCatalogPlanningClient("http://dummy", "token")
+    val extractMethod = client.getClass.getDeclaredMethod("extractCredentials", classOf[String])
+    extractMethod.setAccessible(true)
+
+    val credentials = extractMethod.invoke(client, mockJsonWithCredentials)
+      .asInstanceOf[Option[StorageCredentials]]
+
+    // Verify credentials were extracted correctly
+    assert(credentials.isDefined, "Credentials should be present in mock response")
+    val creds = credentials.get
+    assert(creds.accessKeyId == "test-access-key-123")
+    assert(creds.secretAccessKey == "test-secret-key-456")
+    assert(creds.sessionToken == "test-session-token-789")
+
+    client.close()
+  }
+
+  // Tests that credential extraction handles missing storage-credentials gracefully
+  test("credentials extraction handles missing storage-credentials") {
+    val mockJsonWithoutCredentials =
+      """{
+        |  "plan-status": "completed",
+        |  "file-scan-tasks": []
+        |}""".stripMargin
+
+    val client = new IcebergRESTCatalogPlanningClient("http://dummy", "token")
+    val extractMethod = client.getClass.getDeclaredMethod("extractCredentials", classOf[String])
+    extractMethod.setAccessible(true)
+
+    val credentials = extractMethod.invoke(client, mockJsonWithoutCredentials)
+      .asInstanceOf[Option[StorageCredentials]]
+
+    assert(credentials.isEmpty, "Credentials should be None when not present in response")
+
+    client.close()
+  }
 
   private def startServer(): IcebergRESTServer = {
     val config = Map(IcebergRESTServer.REST_PORT -> "0").asJava
