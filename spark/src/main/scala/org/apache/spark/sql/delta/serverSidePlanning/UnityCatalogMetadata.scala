@@ -122,13 +122,12 @@ case class UnityCatalogMetadata(
     val base = baseUri
     val icebergRestBase = s"$base/api/2.1/unity-catalog/iceberg-rest"
 
-    // Try to get prefix from config
     val prefix = catalogConfig.flatMap(_.overrides.get("prefix"))
-
-    val endpoint = prefix match {
+  val endpoint = prefix match {
       case Some(p) => s"$icebergRestBase/v1/$p"
       case None =>
-        // Fallback: construct prefix from catalog name
+        // Fallback: The endpoint/prefix is optional in the /v1/config response
+        // We construct a default prefix from catalog name in this case
         // Unity Catalog requires: {base}/v1/catalogs/{catalog}/namespaces/{db}/tables/{table}/plan
         s"$icebergRestBase/v1/catalogs/$catalogName"
     }
@@ -146,7 +145,7 @@ object UnityCatalogMetadata {
     val catalogName = if (ident.namespace().length > 1) {
       ident.namespace().head
     } else {
-      // Use current catalog from session instead of defaulting to "spark_catalog"
+      // Use current catalog from session
       // This allows queries with 2-part names (schema.table) to work with Unity Catalog
       spark.sessionState.catalogManager.currentCatalog.name()
     }

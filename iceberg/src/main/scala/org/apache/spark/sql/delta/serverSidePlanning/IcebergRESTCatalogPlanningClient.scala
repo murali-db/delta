@@ -182,7 +182,6 @@ class IcebergRESTCatalogPlanningClient(
     // (e.g., {ucUri}/api/2.1/unity-catalog/iceberg-rest/v1/{prefix}).
     // For other catalogs, the endpoint is passed directly via metadata.
     // See: https://iceberg.apache.org/rest-catalog-spec/
-    // Note: icebergRestCatalogUriRoot already includes /v1/ prefix, so don't duplicate it
     val planTableScanUri = s"$icebergRestCatalogUriRoot/namespaces/$database/tables/$table" +
       "/plan?implementation=MATERIALIZED_PARQUET"
 
