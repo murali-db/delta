@@ -166,11 +166,86 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
       ucToken = "test-token",
       tableProps = Map.empty)
 
-    // Verify endpoint uses simple path without prefix
-    val expectedEndpoint = s"$serverUri/api/2.1/unity-catalog/iceberg-rest"
+    // Verify endpoint constructs default prefix from catalog name
+    val expectedEndpoint = s"$serverUri/api/2.1/unity-catalog/iceberg-rest/v1/catalogs/test_catalog"
     assert(
       metadata.planningEndpointUri == expectedEndpoint,
-      s"Expected endpoint without prefix: ${metadata.planningEndpointUri}")
+      s"Expected endpoint with default catalog prefix: ${metadata.planningEndpointUri}")
+  }
+
+  test("plan endpoint URL format with prefix") {
+    import org.apache.spark.sql.delta.serverSidePlanning.UnityCatalogMetadata
+
+    // Configure server to return prefix
+    server.setCatalogPrefix("catalogs/test-catalog")
+
+    val metadata = UnityCatalogMetadata(
+      catalogName = "test_catalog",
+      ucUri = serverUri,
+      ucToken = "test-token",
+      tableProps = Map.empty)
+
+    val endpointUri = metadata.planningEndpointUri
+
+    // Verify no double /v1/ in the endpoint URI
+    // The URI should have exactly one /v1/ in it
+    val v1Count = "/v1/".r.findAllIn(endpointUri).length
+    assert(v1Count == 1,
+      s"Endpoint URI should contain exactly one /v1/, found $v1Count in: $endpointUri")
+
+    // Verify the endpoint follows the expected format:
+    // {base}/api/2.1/unity-catalog/iceberg-rest/v1/{prefix}
+    assert(endpointUri.contains("/api/2.1/unity-catalog/iceberg-rest/v1/"),
+      s"Endpoint URI should contain the correct path structure: $endpointUri")
+  }
+
+  test("UnityCatalogMetadata.fromTable uses session catalog for 2-part names") {
+    import org.apache.spark.sql.delta.serverSidePlanning.UnityCatalogMetadata
+    import org.apache.spark.sql.connector.catalog.Identifier
+
+    // Set up a custom catalog as the current catalog
+    val customCatalogName = "my_unity_catalog"
+    spark.conf.set(s"spark.sql.catalog.$customCatalogName", 
+      "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+    spark.conf.set(s"spark.sql.catalog.$customCatalogName.uri", serverUri)
+    spark.conf.set(s"spark.sql.catalog.$customCatalogName.token", "test-token")
+    spark.conf.set("spark.sql.defaultCatalog", customCatalogName)
+
+    try {
+      // Create a 2-part identifier (namespace.table, no explicit catalog)
+      val twoPartIdent = Identifier.of(Array("my_schema"), "my_table")
+
+      val metadata = UnityCatalogMetadata.fromTable(
+        table = null, // Not used in this test
+        spark = spark,
+        ident = twoPartIdent)
+
+      // Verify it uses the session's current catalog, not "spark_catalog"
+      assert(metadata.catalogName == customCatalogName,
+        s"Expected catalog name '$customCatalogName' from session, " +
+        s"got '${metadata.catalogName}'")
+    } finally {
+      // Restore default catalog
+      spark.conf.unset("spark.sql.defaultCatalog")
+    }
+  }
+
+  test("UnityCatalogMetadata.fromTable uses explicit catalog for 3-part names") {
+    import org.apache.spark.sql.delta.serverSidePlanning.UnityCatalogMetadata
+    import org.apache.spark.sql.connector.catalog.Identifier
+
+    // Create a 3-part identifier (catalog.namespace.table)
+    val threePartIdent = Identifier.of(Array("explicit_catalog", "my_schema"), "my_table")
+
+    val metadata = UnityCatalogMetadata.fromTable(
+      table = null, // Not used in this test
+      spark = spark,
+      ident = threePartIdent)
+
+    // Verify it uses the explicit catalog from the identifier
+    assert(metadata.catalogName == "explicit_catalog",
+      s"Expected catalog name 'explicit_catalog' from identifier, " +
+      s"got '${metadata.catalogName}'")
   }
 
   test("filter sent to IRC server over HTTP") {
