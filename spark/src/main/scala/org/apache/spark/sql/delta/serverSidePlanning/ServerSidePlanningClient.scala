@@ -92,7 +92,8 @@ private[serverSidePlanning] trait ServerSidePlanningClientFactory {
  * This approach uses lazy initialization (only loads when getFactory() is called) instead
  * of eager ServiceLoader initialization, making it compatible with Spark Connect.
  */
-private[serverSidePlanning] object ServerSidePlanningClientFactory extends io.delta.sql.DeltaLogging {
+private[serverSidePlanning] object ServerSidePlanningClientFactory
+    extends org.apache.spark.sql.delta.metering.DeltaLogging {
   @volatile private var registeredFactory: Option[ServerSidePlanningClientFactory] = None
   @volatile private var autoRegistrationAttempted: Boolean = false
 
@@ -107,18 +108,23 @@ private[serverSidePlanning] object ServerSidePlanningClientFactory extends io.de
         if (!autoRegistrationAttempted) {
           autoRegistrationAttempted = true
           try {
+            // scalastyle:off classforname
             val clazz = Class.forName(
-              "org.apache.spark.sql.delta.serverSidePlanning.IcebergRESTCatalogPlanningClientFactory",
+              "org.apache.spark.sql.delta.serverSidePlanning." +
+                "IcebergRESTCatalogPlanningClientFactory",
               true,  // initialize
               Thread.currentThread().getContextClassLoader)
+            // scalastyle:on classforname
             val factory = clazz.getConstructor().newInstance()
               .asInstanceOf[ServerSidePlanningClientFactory]
             registeredFactory = Some(factory)
-            logInfo(s"Auto-registered ${factory.getClass.getName} for server-side planning")
+            logInfo(
+              s"Auto-registered ${factory.getClass.getName} for server-side planning")
           } catch {
             case _: ClassNotFoundException =>
-              logInfo("IcebergRESTCatalogPlanningClientFactory not found on classpath. " +
-                "Server-side planning will not be available.")
+              logInfo(
+                "IcebergRESTCatalogPlanningClientFactory not found on classpath. " +
+                  "Server-side planning will not be available.")
             case e: Exception =>
               throw new IllegalStateException(
                 "Failed to auto-register IcebergRESTCatalogPlanningClientFactory", e)
