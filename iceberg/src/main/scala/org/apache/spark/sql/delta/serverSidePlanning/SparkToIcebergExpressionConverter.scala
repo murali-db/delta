@@ -156,6 +156,16 @@ private[serverSidePlanning] object SparkToIcebergExpressionConverter extends Log
           s"Failed to convert Spark filter due to unsupported type or value: $sparkFilter"
         val detailMsg = if (e.getMessage != null) {
           if (e.getMessage.contains("Complex type")) {
+            // scalastyle:off println
+            System.err.println(
+              s"[FGAC-DEBUG] *** COMPLEX TYPE FILTER REJECTION ***")
+            System.err.println(
+              s"[FGAC-DEBUG] Filter rejected: $sparkFilter")
+            System.err.println(
+              s"[FGAC-DEBUG] Reason: Complex types (struct/array/map) not supported")
+            System.err.println(
+              s"[FGAC-DEBUG] This confirms the NEW complex type filtering logic is active")
+            // scalastyle:on println
             " (Complex types like struct/array/map are not supported by Iceberg filter pushdown)"
           } else if (e.getMessage.contains("Binary type")) {
             " (Binary types are not supported by Iceberg filter pushdown)"

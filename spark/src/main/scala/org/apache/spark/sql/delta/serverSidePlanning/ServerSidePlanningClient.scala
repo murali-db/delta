@@ -118,10 +118,22 @@ private[serverSidePlanning] object ServerSidePlanningClientFactory
             val factory = clazz.getConstructor().newInstance()
               .asInstanceOf[ServerSidePlanningClientFactory]
             registeredFactory = Some(factory)
+            // scalastyle:off println
+            System.err.println(
+              s"[FGAC-DEBUG] *** REFLECTION-BASED AUTO-REGISTRATION SUCCESSFUL ***")
+            System.err.println(
+              s"[FGAC-DEBUG] Registered factory: ${factory.getClass.getName}")
+            System.err.println(
+              s"[FGAC-DEBUG] This confirms you are using the NEW reflection-based JARs")
+            // scalastyle:on println
             logInfo(
               s"Auto-registered ${factory.getClass.getName} for server-side planning")
           } catch {
             case _: ClassNotFoundException =>
+              // scalastyle:off println
+              System.err.println(
+                "[FGAC-DEBUG] IcebergRESTCatalogPlanningClientFactory not found on classpath")
+              // scalastyle:on println
               logInfo(
                 "IcebergRESTCatalogPlanningClientFactory not found on classpath. " +
                   "Server-side planning will not be available.")
