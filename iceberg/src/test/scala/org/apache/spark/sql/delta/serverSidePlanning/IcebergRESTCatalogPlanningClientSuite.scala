@@ -205,17 +205,32 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
     // Create a 2-part identifier (namespace.table, no explicit catalog)
     val twoPartIdent = Identifier.of(Array("my_schema"), "my_table")
 
-    // The default catalog is spark_catalog which is always available
+    // Verify the identifier structure
+    assert(twoPartIdent.namespace().length == 1,
+      s"Expected 2-part identifier to have namespace length 1, got ${twoPartIdent.namespace().length}")
+    assert(twoPartIdent.namespace()(0) == "my_schema",
+      s"Expected namespace 'my_schema', got '${twoPartIdent.namespace()(0)}'")
+    assert(twoPartIdent.name() == "my_table",
+      s"Expected table name 'my_table', got '${twoPartIdent.name()}'")
+
     val metadata = UnityCatalogMetadata.fromTable(
       table = null, // Not used in this test
       spark = spark,
       ident = twoPartIdent)
 
-    // Verify it uses the session's current catalog (spark_catalog is the default)
     val expectedCatalogName = spark.sessionState.catalogManager.currentCatalog.name()
     assert(metadata.catalogName == expectedCatalogName,
       s"Expected catalog name '$expectedCatalogName' from session, " +
       s"got '${metadata.catalogName}'")
+    
+    // Verify URI and token are read from the correct config key
+    val expectedUri = spark.conf.get(s"spark.sql.catalog.$expectedCatalogName.uri", "")
+    assert(metadata.ucUri == expectedUri,
+      s"Expected ucUri '$expectedUri', got '${metadata.ucUri}'")
+    
+    val expectedToken = spark.conf.get(s"spark.sql.catalog.$expectedCatalogName.token", "")
+    assert(metadata.ucToken == expectedToken,
+      s"Expected ucToken '$expectedToken', got '${metadata.ucToken}'")
   }
 
   test("UnityCatalogMetadata.fromTable uses explicit catalog for 3-part names") {
@@ -230,10 +245,21 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
       spark = spark,
       ident = threePartIdent)
 
-    // Verify it uses the explicit catalog from the identifier
+    // Assert on all metadata fields constructed from the 3-part identifier
     assert(metadata.catalogName == "explicit_catalog",
       s"Expected catalog name 'explicit_catalog' from identifier, " +
       s"got '${metadata.catalogName}'")
+    
+    val expectedUri = spark.conf.get(s"spark.sql.catalog.explicit_catalog.uri", "")
+    assert(metadata.ucUri == expectedUri,
+      s"Expected ucUri '$expectedUri', got '${metadata.ucUri}'")
+    
+    val expectedToken = spark.conf.get(s"spark.sql.catalog.explicit_catalog.token", "")
+    assert(metadata.ucToken == expectedToken,
+      s"Expected ucToken '$expectedToken', got '${metadata.ucToken}'")
+    
+    assert(metadata.tableProperties.isEmpty,
+      s"Expected empty tableProperties, got ${metadata.tableProperties}")
   }
 
   test("filter sent to IRC server over HTTP") {
