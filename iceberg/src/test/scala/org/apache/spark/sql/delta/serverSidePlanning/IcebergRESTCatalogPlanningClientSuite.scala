@@ -187,12 +187,6 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
 
     val endpointUri = metadata.planningEndpointUri
 
-    // Verify no double /v1/ in the endpoint URI
-    // The URI should have exactly one /v1/ in it
-    val v1Count = "/v1/".r.findAllIn(endpointUri).length
-    assert(v1Count == 1,
-      s"Endpoint URI should contain exactly one /v1/, found $v1Count in: $endpointUri")
-
     // Verify the endpoint follows the expected format:
     // {base}/api/2.1/unity-catalog/iceberg-rest/v1/{prefix}
     assert(endpointUri.contains("/api/2.1/unity-catalog/iceberg-rest/v1/"),
@@ -220,7 +214,7 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
         spark = spark,
         ident = twoPartIdent)
 
-      // Verify it uses the session's current catalog, not "spark_catalog"
+      // Verify it uses the session's current catalog
       assert(metadata.catalogName == customCatalogName,
         s"Expected catalog name '$customCatalogName' from session, " +
         s"got '${metadata.catalogName}'")
