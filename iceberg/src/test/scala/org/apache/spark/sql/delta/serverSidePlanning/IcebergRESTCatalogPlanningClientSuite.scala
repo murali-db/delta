@@ -198,23 +198,23 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
     import org.apache.spark.sql.connector.catalog.Identifier
 
     val testCases = Seq(
-      // (identifier, expected catalog name, description)
-      (Identifier.of(Array("my_schema"), "my_table"),
-        spark.sessionState.catalogManager.currentCatalog.name(),
-        "2-part identifier should use session catalog"),
-      (Identifier.of(Array("explicit_catalog", "my_schema"), "my_table"),
-        "explicit_catalog",
-        "3-part identifier should use explicit catalog from identifier")
+      // (description, input, expectedOutput)
+      ("2-part identifier should use session catalog",
+        Identifier.of(Array("my_schema"), "my_table"),
+        spark.sessionState.catalogManager.currentCatalog.name()),
+      ("3-part identifier should use explicit catalog from identifier",
+        Identifier.of(Array("explicit_catalog", "my_schema"), "my_table"),
+        "explicit_catalog")
     )
 
-    testCases.foreach { case (ident, expectedCatalogName, description) =>
+    testCases.foreach { case (description, input, expectedOutput) =>
       val metadata = UnityCatalogMetadata.fromTable(
         table = null,
         spark = spark,
-        ident = ident)
+        ident = input)
 
-      assert(metadata.catalogName == expectedCatalogName,
-        s"[$description] Expected catalog name '$expectedCatalogName', got '${metadata.catalogName}'")
+      assert(metadata.catalogName == expectedOutput,
+        s"[$description] Expected catalog name '$expectedOutput', got '${metadata.catalogName}'")
     }
   }
 
