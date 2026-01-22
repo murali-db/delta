@@ -183,7 +183,7 @@ class IcebergRESTCatalogPlanningClient(
     // For other catalogs, the endpoint is passed directly via metadata.
     // See: https://iceberg.apache.org/rest-catalog-spec/
     val planTableScanUri = s"$icebergRestCatalogUriRoot/namespaces/$database/tables/$table" +
-      "/plan?implementation=MATERIALIZED_PARQUET"
+      "/plan"
 
     // Request planning for current snapshot. snapshotId = 0 means "use current snapshot"
     // in the Iceberg REST API spec. Time-travel queries are not yet supported.
