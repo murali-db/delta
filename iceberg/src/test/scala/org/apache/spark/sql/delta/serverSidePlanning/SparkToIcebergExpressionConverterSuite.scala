@@ -592,4 +592,111 @@ class SparkToIcebergExpressionConverterSuite extends AnyFunSuite {
 
     assertConvert(testCases)
   }
+
+  // ========================================================================
+  // COMPLEX TYPE FILTERING
+  // ========================================================================
+
+  test("complex types (struct, array, map) are rejected with clear error messages") {
+    val testCases = Seq(
+      // Struct/Row types
+      ExprConvTestCase(
+        "EqualTo with Row/Struct value (unsupported)",
+        EqualTo("structCol", org.apache.spark.sql.Row(1, "test")),
+        None  // Should return None (filter rejected)
+      ),
+
+      // Array types
+      ExprConvTestCase(
+        "EqualTo with Array value (unsupported)",
+        EqualTo("arrayCol", Array(1, 2, 3)),
+        None
+      ),
+
+      // Seq types
+      ExprConvTestCase(
+        "EqualTo with Seq value (unsupported)",
+        EqualTo("seqCol", Seq("a", "b", "c")),
+        None
+      ),
+
+      // Map types
+      ExprConvTestCase(
+        "EqualTo with Map value (unsupported)",
+        EqualTo("mapCol", Map("key1" -> "value1")),
+        None
+      ),
+
+      // Binary types
+      ExprConvTestCase(
+        "EqualTo with binary value (unsupported)",
+        EqualTo("binaryCol", Array[Byte](1, 2, 3)),
+        None
+      ),
+
+      // In with complex types
+      ExprConvTestCase(
+        "In with struct values (unsupported)",
+        In("structCol", Array(
+          org.apache.spark.sql.Row(1, "a"),
+          org.apache.spark.sql.Row(2, "b")
+        )),
+        None
+      ),
+
+      // LessThan with complex type
+      ExprConvTestCase(
+        "LessThan with Array value (unsupported)",
+        LessThan("arrayCol", Array(1, 2, 3)),
+        None
+      )
+    )
+
+    assertConvert(testCases)
+  }
+
+  test("nested primitive field access is still supported") {
+    val testCases = Seq(
+      // This SHOULD work - filtering on primitive nested field
+      ExprConvTestCase(
+        "EqualTo on nested primitive field (supported)",
+        EqualTo("address.intCol", 42),
+        Some(Expressions.equal("address.intCol", 42))
+      ),
+
+      ExprConvTestCase(
+        "StringStartsWith on nested primitive field (supported)",
+        StringStartsWith("metadata.stringCol", "test"),
+        Some(Expressions.startsWith("metadata.stringCol", "test"))
+      )
+    )
+
+    assertConvert(testCases)
+  }
+
+  test("null handling on complex type columns") {
+    val testCases = Seq(
+      // Null checks should work on complex type columns (using existing struct columns)
+      ExprConvTestCase(
+        "IsNull on struct column (address)",
+        IsNull("address"),
+        Some(Expressions.isNull("address"))
+      ),
+
+      ExprConvTestCase(
+        "IsNotNull on struct column (metadata)",
+        IsNotNull("metadata"),
+        Some(Expressions.notNull("metadata"))
+      ),
+
+      // EqualTo with null converts to isNull (works on any column type)
+      ExprConvTestCase(
+        "EqualTo(address, null) converts to isNull",
+        EqualTo("address", null),
+        Some(Expressions.isNull("address"))
+      )
+    )
+
+    assertConvert(testCases)
+  }
 }

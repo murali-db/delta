@@ -17,7 +17,9 @@
 package org.apache.spark.sql.delta.serverSidePlanning
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.util.{ArrayData, DateTimeUtils, MapData}
 import org.apache.spark.sql.sources._
 import shadedForDelta.org.apache.iceberg.expressions.{Expression, Expressions}
 
@@ -49,6 +51,22 @@ import shadedForDelta.org.apache.iceberg.expressions.{Expression, Expressions}
  * +-----------------------+--------------------------------+
  * }}}
  *
+ * Unsupported Types:
+ * ------------------
+ * The following data types are NOT supported in filter predicates:
+ * - Struct/Row types: Iceberg does not collect metrics for struct fields
+ * - Array types: Iceberg does not support array literal predicates
+ * - Map types: Iceberg does not support map literal predicates
+ * - Binary types: Iceberg Literals.from() cannot handle binary data
+ *
+ * When filters contain these types, they are rejected (return None) and will not be
+ * pushed down to the Iceberg catalog. The filtering will be performed by Spark instead.
+ *
+ * Note: Filtering on nested primitive fields WITHIN structs is supported:
+ *   EqualTo("address.city", "Seattle")  - Supported (primitive value)
+ *   EqualTo("address", Row(...))        - Not supported (struct value)
+ *
+ * See: https://github.com/apache/iceberg/issues/5132
  *
  * Example usage:
  * {{{
@@ -134,8 +152,20 @@ private[serverSidePlanning] object SparkToIcebergExpressionConverter extends Log
          * - NaN in comparison operators (LessThan, GreaterThan, etc.)
          * - Unsupported types (e.g., Array, Map, binary types)
          */
-        logWarning(s"Failed to convert Spark filter due to unsupported type or value: " +
-          s"$sparkFilter", e)
+        val errorMsg =
+          s"Failed to convert Spark filter due to unsupported type or value: $sparkFilter"
+        val detailMsg = if (e.getMessage != null) {
+          if (e.getMessage.contains("Complex type")) {
+            " (Complex types like struct/array/map are not supported by Iceberg filter pushdown)"
+          } else if (e.getMessage.contains("Binary type")) {
+            " (Binary types are not supported by Iceberg filter pushdown)"
+          } else {
+            ""
+          }
+        } else {
+          ""
+        }
+        logWarning(errorMsg + detailMsg, e)
         None
     }
     logDebug(s"Conversion result for $sparkFilter: " +
@@ -185,7 +215,52 @@ private[serverSidePlanning] object SparkToIcebergExpressionConverter extends Log
     case v: java.math.BigDecimal => v
     case v: String => v
     case v: Boolean if supportBoolean => v: java.lang.Boolean
-    case _ => value
+
+    // Explicit rejection of complex types
+    case _: Row =>
+      throw new IllegalArgumentException(
+        "Complex type filtering not supported: Spark SQL Row (struct) types cannot be " +
+        "converted to Iceberg literals. Iceberg does not collect metrics for complex types.")
+
+    case _: Array[_] =>
+      throw new IllegalArgumentException(
+        "Complex type filtering not supported: Array types cannot be converted to Iceberg " +
+        "literals. Iceberg does not collect metrics for complex types.")
+
+    case _: scala.collection.Seq[_] =>
+      throw new IllegalArgumentException(
+        "Complex type filtering not supported: Seq types cannot be converted to Iceberg " +
+        "literals. Iceberg does not collect metrics for complex types.")
+
+    case _: scala.collection.Map[_, _] =>
+      throw new IllegalArgumentException(
+        "Complex type filtering not supported: Map types cannot be converted to Iceberg " +
+        "literals. Iceberg does not collect metrics for complex types.")
+
+    case _: InternalRow =>
+      throw new IllegalArgumentException(
+        "Complex type filtering not supported: Spark InternalRow cannot be converted to " +
+        "Iceberg literals. Iceberg does not collect metrics for complex types.")
+
+    case _: ArrayData =>
+      throw new IllegalArgumentException(
+        "Complex type filtering not supported: Spark ArrayData cannot be converted to " +
+        "Iceberg literals. Iceberg does not collect metrics for complex types.")
+
+    case _: MapData =>
+      throw new IllegalArgumentException(
+        "Complex type filtering not supported: Spark MapData cannot be converted to " +
+        "Iceberg literals. Iceberg does not collect metrics for complex types.")
+
+    case _: Array[Byte] =>
+      throw new IllegalArgumentException(
+        "Binary type filtering not supported: Binary types cannot be converted to " +
+        "Iceberg literals.")
+
+    // Modified fallthrough case - throw for ANY unrecognized type
+    case _ =>
+      throw new IllegalArgumentException(
+        s"Unsupported type for Iceberg filter conversion: ${value.getClass.getName}")
   }
 
   /*
