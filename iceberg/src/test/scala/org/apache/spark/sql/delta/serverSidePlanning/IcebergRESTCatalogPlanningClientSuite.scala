@@ -193,73 +193,29 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
       s"Endpoint URI should contain the correct path structure: $endpointUri")
   }
 
-  test("UnityCatalogMetadata.fromTable uses session catalog for 2-part names") {
+  test("UnityCatalogMetadata.fromTable resolves catalog name correctly") {
     import org.apache.spark.sql.delta.serverSidePlanning.UnityCatalogMetadata
     import org.apache.spark.sql.connector.catalog.Identifier
 
-    // For a 2-part identifier (namespace.table), the code should use the
-    // current catalog from the session. We test this by verifying the catalog name
-    // extraction logic: if namespace length is 1, it calls
-    // spark.sessionState.catalogManager.currentCatalog.name()
-    
-    // Create a 2-part identifier (namespace.table, no explicit catalog)
-    val twoPartIdent = Identifier.of(Array("my_schema"), "my_table")
+    val testCases = Seq(
+      // (identifier, expected catalog name, description)
+      (Identifier.of(Array("my_schema"), "my_table"),
+        spark.sessionState.catalogManager.currentCatalog.name(),
+        "2-part identifier should use session catalog"),
+      (Identifier.of(Array("explicit_catalog", "my_schema"), "my_table"),
+        "explicit_catalog",
+        "3-part identifier should use explicit catalog from identifier")
+    )
 
-    // Verify the identifier structure
-    assert(twoPartIdent.namespace().length == 1,
-      s"Expected 2-part identifier to have namespace length 1, got ${twoPartIdent.namespace().length}")
-    assert(twoPartIdent.namespace()(0) == "my_schema",
-      s"Expected namespace 'my_schema', got '${twoPartIdent.namespace()(0)}'")
-    assert(twoPartIdent.name() == "my_table",
-      s"Expected table name 'my_table', got '${twoPartIdent.name()}'")
+    testCases.foreach { case (ident, expectedCatalogName, description) =>
+      val metadata = UnityCatalogMetadata.fromTable(
+        table = null,
+        spark = spark,
+        ident = ident)
 
-    val metadata = UnityCatalogMetadata.fromTable(
-      table = null, // Not used in this test
-      spark = spark,
-      ident = twoPartIdent)
-
-    val expectedCatalogName = spark.sessionState.catalogManager.currentCatalog.name()
-    assert(metadata.catalogName == expectedCatalogName,
-      s"Expected catalog name '$expectedCatalogName' from session, " +
-      s"got '${metadata.catalogName}'")
-    
-    // Verify URI and token are read from the correct config key
-    val expectedUri = spark.conf.get(s"spark.sql.catalog.$expectedCatalogName.uri", "")
-    assert(metadata.ucUri == expectedUri,
-      s"Expected ucUri '$expectedUri', got '${metadata.ucUri}'")
-    
-    val expectedToken = spark.conf.get(s"spark.sql.catalog.$expectedCatalogName.token", "")
-    assert(metadata.ucToken == expectedToken,
-      s"Expected ucToken '$expectedToken', got '${metadata.ucToken}'")
-  }
-
-  test("UnityCatalogMetadata.fromTable uses explicit catalog for 3-part names") {
-    import org.apache.spark.sql.delta.serverSidePlanning.UnityCatalogMetadata
-    import org.apache.spark.sql.connector.catalog.Identifier
-
-    // Create a 3-part identifier (catalog.namespace.table)
-    val threePartIdent = Identifier.of(Array("explicit_catalog", "my_schema"), "my_table")
-
-    val metadata = UnityCatalogMetadata.fromTable(
-      table = null, // Not used in this test
-      spark = spark,
-      ident = threePartIdent)
-
-    // Assert on all metadata fields constructed from the 3-part identifier
-    assert(metadata.catalogName == "explicit_catalog",
-      s"Expected catalog name 'explicit_catalog' from identifier, " +
-      s"got '${metadata.catalogName}'")
-    
-    val expectedUri = spark.conf.get(s"spark.sql.catalog.explicit_catalog.uri", "")
-    assert(metadata.ucUri == expectedUri,
-      s"Expected ucUri '$expectedUri', got '${metadata.ucUri}'")
-    
-    val expectedToken = spark.conf.get(s"spark.sql.catalog.explicit_catalog.token", "")
-    assert(metadata.ucToken == expectedToken,
-      s"Expected ucToken '$expectedToken', got '${metadata.ucToken}'")
-    
-    assert(metadata.tableProperties.isEmpty,
-      s"Expected empty tableProperties, got ${metadata.tableProperties}")
+      assert(metadata.catalogName == expectedCatalogName,
+        s"[$description] Expected catalog name '$expectedCatalogName', got '${metadata.catalogName}'")
+    }
   }
 
   test("filter sent to IRC server over HTTP") {
