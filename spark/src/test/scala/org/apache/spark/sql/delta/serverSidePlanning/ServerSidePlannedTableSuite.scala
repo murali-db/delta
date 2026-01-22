@@ -245,7 +245,8 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
     // a prefix from the catalog name. For tests of the prefix case with a real
     // IRC server, see IcebergRESTCatalogPlanningClientSuite.
     val expectedEndpoint =
-      "https://unity-catalog-server.example.com/api/2.1/unity-catalog/iceberg-rest/v1/catalogs/test_catalog"
+      "https://unity-catalog-server.example.com/api/2.1/unity-catalog/" +
+      "iceberg-rest/v1/catalogs/test_catalog"
     assert(metadata.planningEndpointUri == expectedEndpoint)
   }
 
