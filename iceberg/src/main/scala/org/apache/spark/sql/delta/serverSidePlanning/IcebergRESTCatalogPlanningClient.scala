@@ -229,6 +229,18 @@ class IcebergRESTCatalogPlanningClient(
     }
     val httpPost = new HttpPost(planTableScanUri)
     httpPost.setEntity(new StringEntity(requestJson, ContentType.APPLICATION_JSON))
+
+    // scalastyle:off println
+    System.err.println("[FGAC-DEBUG] *** POST Request Details ***")
+    System.err.println(s"[FGAC-DEBUG] URL: $planTableScanUri")
+    System.err.println(s"[FGAC-DEBUG] Headers:")
+    httpHeaders.forEach { header =>
+      System.err.println(s"[FGAC-DEBUG]   ${header.getName}: ${header.getValue}")
+    }
+    System.err.println(s"[FGAC-DEBUG] Request Body: $requestJson")
+    System.err.println("[FGAC-DEBUG] *** End of POST Request ***")
+    // scalastyle:on println
+
     // TODO: Add retry logic for transient HTTP failures (e.g., connection timeouts, 5xx errors)
     val httpResponse = httpClient.execute(httpPost)
 
