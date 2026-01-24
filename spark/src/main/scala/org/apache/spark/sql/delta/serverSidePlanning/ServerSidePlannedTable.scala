@@ -112,39 +112,19 @@ object ServerSidePlannedTable extends DeltaLogging {
       ident: Identifier,
       table: Table,
       isUnityCatalog: Boolean): Option[ServerSidePlannedTable] = {
-    // scalastyle:off println
-    System.err.println("[FGAC-DEBUG] *** Table Properties from UC ***")
-    System.err.println(s"[FGAC-DEBUG] Table: ${ident.namespace().mkString(".")}.${ident.name()}")
-    System.err.println(s"[FGAC-DEBUG] isUnityCatalog: $isUnityCatalog")
-    System.err.println("[FGAC-DEBUG] All table properties:")
-    val props = table.properties()
-    val iter = props.keySet().iterator()
-    while (iter.hasNext) {
-      val key = iter.next()
-      val value = props.get(key)
-      // Truncate long values for readability
-      val displayValue = if (value != null && value.length > 100) {
-        value.take(100) + "... (truncated)"
-      } else {
-        value
-      }
-      System.err.println(s"[FGAC-DEBUG]   $key = $displayValue")
-    }
-    System.err.println("[FGAC-DEBUG] *** End of Table Properties ***")
-    // scalastyle:on println
-
     // Check if we should enable server-side planning (for testing)
     val enableServerSidePlanning =
       spark.conf.get(DeltaSQLConf.ENABLE_SERVER_SIDE_PLANNING.key, "false").toBoolean
     val hasTableCredentials = hasCredentials(table)
 
     // scalastyle:off println
-    System.err.println(s"[FGAC-DEBUG] hasTableCredentials: $hasTableCredentials")
-    System.err.println(s"[FGAC-DEBUG] enableServerSidePlanning: $enableServerSidePlanning")
     val willUseServerSidePlanning = shouldUseServerSidePlanning(
       isUnityCatalog, hasTableCredentials, enableServerSidePlanning,
       skipUCRequirementForTests = DeltaUtils.isTesting)
-    System.err.println(s"[FGAC-DEBUG] Will use server-side planning: $willUseServerSidePlanning")
+    System.err.println(
+      s"[FGAC-DEBUG] SSP Decision for ${ident.namespace().mkString(".")}.${ident.name()}: " +
+      s"isUC=$isUnityCatalog, hasCreds=$hasTableCredentials, " +
+      s"allowSSP=$enableServerSidePlanning => willUseSSP=$willUseServerSidePlanning")
     // scalastyle:on println
 
     // Check if we should use server-side planning
