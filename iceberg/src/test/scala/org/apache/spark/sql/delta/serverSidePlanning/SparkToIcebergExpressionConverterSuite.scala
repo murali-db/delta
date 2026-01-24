@@ -730,4 +730,101 @@ class SparkToIcebergExpressionConverterSuite extends AnyFunSuite {
 
     assertConvert(operatorTests ++ booleanComparisonTests ++ Seq(inWithNestedArrays))
   }
+
+  // ========================================================================
+  // COLUMN NAMES WITH DOTS
+  // ========================================================================
+
+  test("column names with dots (literal column names, not nested fields)") {
+    val testCases = Seq(
+      // Simple column without dot
+      ExprConvTestCase(
+        "Column name without dot", // Test case label
+        EqualTo("intCol", 5), // Spark filter builder
+        Some(Expressions.equal("intCol", 5)) // Iceberg expression builder
+      ),
+
+      // Column name with single dot (literal column name, not nested field access)
+      ExprConvTestCase(
+        "Column name with single dot (literal column name)",
+        EqualTo("address.city", "Seattle"),
+        Some(Expressions.equal("address.city", "Seattle"))
+      ),
+
+      // Column name with multiple dots
+      ExprConvTestCase(
+        "Column name with multiple dots",
+        EqualTo("a.b.c", "value"),
+        Some(Expressions.equal("a.b.c", "value"))
+      ),
+
+      // Test escaping with IsNull/IsNotNull
+      ExprConvTestCase(
+        "IsNull with dotted column name",
+        IsNull("address.city"),
+        Some(Expressions.isNull("address.city"))
+      ),
+      ExprConvTestCase(
+        "IsNotNull with dotted column name",
+        IsNotNull("a.b.c"),
+        Some(Expressions.notNull("a.b.c"))
+      ),
+
+      // Test escaping with IN operator
+      ExprConvTestCase(
+        "In with dotted column name",
+        In("address.city", Array("Seattle", "Portland", "Denver")),
+        Some(Expressions.in("address.city", "Seattle", "Portland", "Denver"))
+      ),
+
+      // Test escaping with string operations
+      ExprConvTestCase(
+        "StringStartsWith with dotted column name",
+        StringStartsWith("address.city", "Sea"),
+        Some(Expressions.startsWith("address.city", "Sea"))
+      ),
+
+      // Test escaping with Not(EqualTo) - special case
+      ExprConvTestCase(
+        "Not(EqualTo) with dotted column name",
+        Not(EqualTo("address.city", "Seattle")),
+        Some(Expressions.notEqual("address.city", "Seattle"))
+      ),
+      ExprConvTestCase(
+        "Not(EqualTo(col, null)) with dotted column name (IS NOT NULL)",
+        Not(EqualTo("a.b.c", null)),
+        Some(Expressions.notNull("a.b.c"))
+      ),
+
+      // Test escaping with logical operators combining dotted and non-dotted columns
+      ExprConvTestCase(
+        "AND with dotted and non-dotted columns",
+        And(
+          EqualTo("intCol", 5),
+          EqualTo("address.city", "Seattle")
+        ),
+        Some(
+          Expressions.and(
+            Expressions.equal("intCol", 5),
+            Expressions.equal("address.city", "Seattle")
+          )
+        )
+      ),
+      ExprConvTestCase(
+        "OR with multiple dotted columns",
+        Or(
+          EqualTo("address.city", "Seattle"),
+          EqualTo("a.b.c", "value")
+        ),
+        Some(
+          Expressions.or(
+            Expressions.equal("address.city", "Seattle"),
+            Expressions.equal("a.b.c", "value")
+          )
+        )
+      )
+    )
+
+    assertConvert(testCases)
+  }
 }
