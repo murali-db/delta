@@ -49,7 +49,15 @@ object ServerSidePlannedTable extends DeltaLogging {
     "aws.temporary.credentials",
     "azure.temporary.credentials",
     "gcs.temporary.credentials",
-    "credential"
+    "credential",
+    // Unity Catalog S3 credentials (prefixed with option.)
+    "option.fs.s3a.access.key",
+    "option.fs.s3a.secret.key",
+    "option.fs.s3a.session.token",
+    // Unity Catalog Azure credentials
+    "option.fs.azure.sas",
+    // Unity Catalog GCS credentials
+    "option.fs.gs.auth.access.token"
   )
 
   /**
@@ -194,12 +202,43 @@ object ServerSidePlannedTable extends DeltaLogging {
    * Unity Catalog tables may lack credentials when accessed without proper permissions.
    * UC injects credentials as table properties, see:
    * https://github.com/unitycatalog/unitycatalog/blob/main/connectors/spark/src/main/scala/
-   *   io/unitycatalog/spark/UCSingleCatalog.scala#L260
+   *   io/unitycatalog/spark/UCSingleCatalog.scala#L357
+   *
+   * UC sets credentials with "option." prefix (e.g., "option.fs.s3a.access.key")
+   * See: connectors/spark/src/main/scala/io/unitycatalog/spark/auth/CredPropsUtil.java
    */
   private def hasCredentials(table: Table): Boolean = {
-    // Check table properties for credential information
     val properties = table.properties()
-    CREDENTIAL_PROPERTY_KEYS.exists(key => properties.containsKey(key))
+
+    // Check for exact key matches
+    val hasExactMatch = CREDENTIAL_PROPERTY_KEYS.exists(key => properties.containsKey(key))
+    if (hasExactMatch) {
+      return true
+    }
+
+    // Check for UC credential provider properties (renewable mode)
+    // These indicate UC has set up credential providers even if raw creds aren't visible
+    val providerKeys = Seq(
+      "option.fs.s3a.aws.credentials.provider",
+      "option.fs.azure.sas.token.provider.type",
+      "option.fs.gs.auth.access.token.provider"
+    )
+    val hasProvider = providerKeys.exists(key => properties.containsKey(key))
+    if (hasProvider) {
+      return true
+    }
+
+    // Check for Azure SAS tokens (can be dynamic keys matching pattern)
+    // Pattern: option.fs.azure.sas.*
+    val iter = properties.keySet().iterator()
+    while (iter.hasNext) {
+      val key = iter.next()
+      if (key.startsWith("option.fs.azure.sas.")) {
+        return true
+      }
+    }
+
+    false
   }
 }
 
