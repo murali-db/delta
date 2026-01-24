@@ -25,7 +25,6 @@ import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.catalog.Identifier
-import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.util.{Utils => DeltaUtils}
 import org.apache.spark.sql.connector.catalog.{SupportsRead, Table, TableCapability}
@@ -39,7 +38,7 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 /**
  * Companion object for ServerSidePlannedTable with factory methods.
  */
-object ServerSidePlannedTable extends DeltaLogging {
+object ServerSidePlannedTable {
   /**
    * Property keys that indicate table credentials are available.
    * Unity Catalog tables may expose temporary credentials via these properties.
@@ -140,9 +139,11 @@ object ServerSidePlannedTable extends DeltaLogging {
       // Try to create ServerSidePlannedTable with server-side planning
       val plannedTable = tryCreate(spark, namespace, tableName, table.schema(), metadata)
       if (plannedTable.isEmpty) {
-        logWarning(
-          s"Server-side planning not available for catalog ${metadata.catalogName}. " +
-            "Falling back to normal table loading.")
+        // scalastyle:off println
+        System.err.println(
+          s"[FGAC-DEBUG] Server-side planning not available for catalog " +
+          s"${metadata.catalogName}. Falling back to normal table loading.")
+        // scalastyle:on println
       }
       plannedTable
     } else {
@@ -236,7 +237,7 @@ class ServerSidePlannedTable(
     tableName: String,
     tableSchema: StructType,
     planningClient: ServerSidePlanningClient)
-    extends Table with SupportsRead with DeltaLogging {
+    extends Table with SupportsRead {
 
   // Returns fully qualified name (e.g., "catalog.database.table").
   // The databaseName parameter receives ident.namespace().mkString(".") from DeltaCatalog,
@@ -269,8 +270,7 @@ class ServerSidePlannedScanBuilder(
   extends ScanBuilder
   with SupportsPushDownFilters
   with SupportsPushDownRequiredColumns
-  with SupportsPushDownLimit
-  with DeltaLogging {
+  with SupportsPushDownLimit {
 
   // Filters that have been pushed down and will be sent to the server
   private var _pushedFilters: Array[Filter] = Array.empty
@@ -313,15 +313,19 @@ class ServerSidePlannedScanBuilder(
       // All filters successfully converted to server's native format
       // Trust that the server can handle them - return no residuals
       // This enables Spark to call pushLimit() for combined filter+limit pushdown
-      logInfo(s"All ${filters.length} filters convertible, " +
+      // scalastyle:off println
+      System.err.println(s"[FGAC-DEBUG] All ${filters.length} filters convertible, " +
               "returning empty residuals to enable limit pushdown")
+      // scalastyle:on println
       Array.empty
     } else {
       // At least one filter failed to convert
       // Return all filters as residuals for safety (Spark will re-apply)
       // Note: Server will still receive converted filters, but Spark provides safety net
-      logWarning(s"Some filters failed to convert, " +
+      // scalastyle:off println
+      System.err.println(s"[FGAC-DEBUG] Some filters failed to convert, " +
                  "returning all as residuals (limit pushdown disabled)")
+      // scalastyle:on println
       filters
     }
   }
