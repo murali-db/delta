@@ -416,10 +416,11 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
             EqualTo("address.intCol", 200),
             Seq("intCol", "address.intCol"),
             Some(5)),
-          FilterProjectionTestCase(
+          PushdownTestCase(
             "literal dotted column name in projection",
             EqualTo("a.b.c", "value"),
-            Seq("intCol", "a.b.c"))
+            Seq("intCol", "a.b.c"),
+            None)
         )
 
         testCases.foreach { testCase =>
