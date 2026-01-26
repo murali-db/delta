@@ -1,2 +1,0 @@
-{"time":"2026-01-24T19:55:05.697503513Z","level":"INFO","msg":"No project file found","path":"/home/murali.ramanujam/fgac_bugbash_prep/delta/.bazelbsp/project.json"}
-{"time":"2026-01-24T19:55:05.707862218Z","level":"ERROR","msg":"failed to load project","error":"exit status 1"}
