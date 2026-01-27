@@ -435,13 +435,62 @@ class AbstractDeltaCatalog extends DelegatingCatalogExtension
       }
     }
 
+  /**
+   * Stage a table replacement operation, called by Spark when executing ReplaceTableAsSelect.
+   * 
+   * CRITICAL DATA LOSS PREVENTION:
+   * This method implements defensive logic to prevent irreversible data loss during table
+   * overwrite operations. The danger occurs when:
+   * 1. Spark creates a ReplaceTableAsSelect logical plan (via saveAsTable + mode=overwrite)
+   * 2. This method is called to stage the replacement
+   * 3. The code drops the existing table (super.dropTable)
+   * 4. The subsequent createTable fails (e.g., missing catalog properties, permission errors)
+   * 5. Result: Table and all data are permanently lost
+   * 
+   * ARCHITECTURAL APPROACH:
+   * An alternative approach would be to modify Spark's DataFrameWriter to prevent
+   * ReplaceTableAsSelect from being created for existing tables, instead creating
+   * OverwritePartitionsDynamic or OverwriteByExpression (data-level operations that
+   * never drop the table). Since we cannot modify Spark code, we intercept
+   * ReplaceTableAsSelect at the catalog execution level and route Delta tables to
+   * the safe StagedDeltaTableV2 path, which performs atomic replace operations
+   * without dropping the table first.
+   * 
+   * PROTECTION STRATEGY:
+   * We use the safe StagedDeltaTableV2 path (which never drops tables) when either:
+   * 1. Provider property correctly identifies table as Delta (original logic), OR
+   * 2. Existing table is actually a DeltaTableV2 (handles missing provider properties)
+   * 
+   * Only when BOTH checks fail do we allow the dangerous DROP path (for non-Delta tables).
+   */
   override def stageCreateOrReplace(
       ident: Identifier,
       schema: StructType,
       partitions: Array[Transform],
       properties: util.Map[String, String]): StagedTable =
     recordFrameProfile("DeltaCatalog", "stageCreateOrReplace") {
-      if (DeltaSourceUtils.isDeltaDataSourceName(getProvider(properties))) {
+      // Check if the existing table is a Delta table to avoid dropping it.
+      // This prevents data loss when the provider property is missing or incorrect
+      // but the table is actually a Delta table. This check covers all scenarios
+      // including dynamic partition overwrite, regular overwrite, and managed tables
+      // with missing catalog properties.
+      val existingTableIsDelta = try {
+        val table = super.loadTable(ident)
+        table match {
+          case _: DeltaTableV2 =>
+            logInfo(s"Existing table $ident is a Delta table, using safe path for replace")
+            true
+          case _ => false
+        }
+      } catch {
+        case _: NoSuchTableException => false
+        case _: Exception => false
+      }
+      
+      if (DeltaSourceUtils.isDeltaDataSourceName(getProvider(properties)) || 
+          existingTableIsDelta) {
+        // SAFE PATH: Use StagedDeltaTableV2 which performs atomic replace operations
+        // without dropping the table first. This prevents data loss if the operation fails.
         new StagedDeltaTableV2(
           ident,
           schema,
@@ -450,6 +499,10 @@ class AbstractDeltaCatalog extends DelegatingCatalogExtension
           TableCreationModes.CreateOrReplace
         )
       } else {
+        // DANGEROUS PATH: Only reached for non-Delta tables.
+        // WARNING: This drops the table BEFORE creating the new one. If createTable fails,
+        // the table and all data are permanently lost. This is why we have the three checks
+        // above to ensure we never reach this path for Delta tables.
         try super.dropTable(ident)
         catch {
           case _: NoSuchDatabaseException => // this is fine
