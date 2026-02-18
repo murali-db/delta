@@ -182,7 +182,9 @@ object ScanPlanStorageCredentials {
 
   /** IRC config key mappings for each credential type. */
   private val S3_KEYS = Seq("s3.access-key-id", "s3.secret-access-key", "s3.session-token")
-  private val AZURE_KEYS = Seq("azure.account-name", "azure.sas-token", "azure.container-name")
+  /** Azure ADLS keys: adls.sas-token.<account>.dfs.core.windows.net, adls.sas-token-expires-at-ms.<account>.dfs.core.windows.net */
+  private val AZURE_SAS_TOKEN_PREFIX = "adls.sas-token."
+  private val AZURE_SAS_TOKEN_SUFFIX = ".dfs.core.windows.net"
   private val GCS_KEYS = Seq("gcs.oauth2.token")
 
   /**
@@ -196,17 +198,31 @@ object ScanPlanStorageCredentials {
 
     def hasAny(keys: Seq[String]): Boolean = keys.exists(config.contains)
 
+    def hasAzureKeys: Boolean =
+      config.keys.exists(k => k.startsWith(AZURE_SAS_TOKEN_PREFIX) && k.endsWith(AZURE_SAS_TOKEN_SUFFIX))
+
+    def buildAzureCredentials(): AzureCredentials = {
+      val sasTokenKey = config.keys.find { k =>
+        k.startsWith(AZURE_SAS_TOKEN_PREFIX) &&
+        k.endsWith(AZURE_SAS_TOKEN_SUFFIX) &&
+        !k.contains("sas-token-expires-at-ms")
+      }.getOrElse(throw new IllegalStateException(
+        s"Azure config missing adls.sas-token.<account>.dfs.core.windows.net key"))
+      val sasToken = get(sasTokenKey)
+      val accountName = sasTokenKey
+        .stripPrefix(AZURE_SAS_TOKEN_PREFIX)
+        .stripSuffix(AZURE_SAS_TOKEN_SUFFIX)
+      AzureCredentials(accountName = accountName, sasToken = sasToken, containerName = "")
+    }
+
     // Try each sealed trait subtype in priority order
     if (hasAny(S3_KEYS)) {
       S3Credentials(
         get("s3.access-key-id"),
         get("s3.secret-access-key"),
         get("s3.session-token"))
-    } else if (hasAny(AZURE_KEYS)) {
-      AzureCredentials(
-        get("azure.account-name"),
-        get("azure.sas-token"),
-        get("azure.container-name"))
+    } else if (hasAzureKeys) {
+      buildAzureCredentials()
     } else if (hasAny(GCS_KEYS)) {
       GcsCredentials(get("gcs.oauth2.token"))
     } else {
