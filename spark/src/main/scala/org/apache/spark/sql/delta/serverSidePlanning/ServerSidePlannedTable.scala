@@ -467,7 +467,7 @@ class ServerSidePlannedFilePartitionReaderFactory(
           conf.set("fs.s3a.session.token", sessionToken)
 
         case AzureCredentials(accountName, _containerName, credentialEntries) =>
-          // ABFS 3.4.1+: auth.type + sas.fixed.token only; driver uses FixedSASTokenProvider by default.
+          // ABFS 3.4.1+: auth.type + sas.fixed.token only (driver uses FixedSASTokenProvider).
           val accountSuffix = s"$accountName.dfs.core.windows.net"
           val sasTokenKey = credentialEntries.keys.find(!_.contains("sas-token-expires-at-ms"))
             .getOrElse(credentialEntries.keys.head)
@@ -483,13 +483,22 @@ class ServerSidePlannedFilePartitionReaderFactory(
             s"  fs.azure.sas.fixed.token.$accountSuffix = $sasTokenValue"
           println(azureLog)
 
-        case GcsCredentials(oauth2Token) =>
-          val gcsConfKeys = Seq("fs.gs.impl.disable.cache", "fs.gs.auth.access.token")
-          println(s"[ServerSidePlannedFilePartitionReaderFactory] ScanPlanStorageCredentials " +
-            s"usage: injecting GCS credentials into Hadoop conf. Keys set (values not logged): " +
-            s"${gcsConfKeys.mkString(", ")}")
+        case GcsCredentials(oauth2Token, expirationEpochMs) =>
           conf.set("fs.gs.impl.disable.cache", "true")
+          conf.set("fs.gs.auth.type", "ACCESS_TOKEN_PROVIDER")
+          conf.set("fs.gs.auth.access.token.provider",
+            "org.apache.spark.sql.delta.serverSidePlanning.gcs." +
+            "ConfBasedGcsAccessTokenProvider")
           conf.set("fs.gs.auth.access.token", oauth2Token)
+          expirationEpochMs.foreach(ms => conf.set("fs.gs.auth.access.token.expiration.ms", ms.toString))
+          val gcsConfKeys = Seq(
+            "fs.gs.impl.disable.cache",
+            "fs.gs.auth.type",
+            "fs.gs.auth.access.token.provider",
+            "fs.gs.auth.access.token") ++ expirationEpochMs.toSeq.map(_ => "fs.gs.auth.access.token.expiration.ms")
+          println(s"[ServerSidePlannedFilePartitionReaderFactory] ScanPlanStorageCredentials " +
+            s"usage: injecting GCS credentials (AccessTokenProvider). Keys set: " +
+            s"${gcsConfKeys.mkString(", ")}")
       }
     }
     // scalastyle:on println

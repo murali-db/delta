@@ -548,7 +548,15 @@ class IcebergRESTCatalogPlanningClientSuite extends QueryTest with SharedSparkSe
           CredentialTestCase(
             "GCS",
             Map("gcs.oauth2.token" -> "test-oauth2-token"),
-            GcsCredentials(oauth2Token = "test-oauth2-token"))
+            GcsCredentials(oauth2Token = "test-oauth2-token", expirationEpochMs = None)),
+          CredentialTestCase(
+            "GCS with expiration",
+            Map(
+              "gcs.oauth2.token" -> "test-oauth2-token",
+              "gcs.oauth2.token-expires-at" -> "1771456336352"),
+            GcsCredentials(
+              oauth2Token = "test-oauth2-token",
+              expirationEpochMs = Some(1771456336352L)))
         )
 
         testCases.foreach { testCase =>

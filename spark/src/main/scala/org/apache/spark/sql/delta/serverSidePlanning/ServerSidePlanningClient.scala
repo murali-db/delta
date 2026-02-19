@@ -254,7 +254,10 @@ object ScanPlanStorageCredentials {
     } else if (hasAny(GCS_KEYS)) {
       println(s"[ScanPlanStorageCredentials.fromConfig] Matched GCS: config contains " +
         s"(${GCS_KEYS.mkString(", ")}). Creating GcsCredentials.")
-      GcsCredentials(get("gcs.oauth2.token"))
+      val token = get("gcs.oauth2.token")
+      val expirationMs = config.get("gcs.oauth2.token-expires-at")
+        .flatMap(s => scala.util.Try(s.toLong).toOption)
+      GcsCredentials(oauth2Token = token, expirationEpochMs = expirationMs)
     } else {
       println(s"[ScanPlanStorageCredentials.fromConfig] Unrecognized credential keys: " +
         s"[$keyList]. Expected S3, Azure, or GCS properties.")
@@ -283,10 +286,11 @@ case class AzureCredentials(
     credentialEntries: Map[String, String]) extends ScanPlanStorageCredentials
 
 /**
- * Google Cloud Storage OAuth2 token credentials.
+ * GCS OAuth2 token + optional expiration (for AccessTokenProvider).
  */
 case class GcsCredentials(
-    oauth2Token: String) extends ScanPlanStorageCredentials
+    oauth2Token: String,
+    expirationEpochMs: Option[Long] = None) extends ScanPlanStorageCredentials
 
 /**
  * Result of a table scan plan operation.

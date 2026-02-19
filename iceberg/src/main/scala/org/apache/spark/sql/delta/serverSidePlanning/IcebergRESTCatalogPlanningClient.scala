@@ -393,6 +393,7 @@ class IcebergRESTCatalogPlanningClient(
    *       "s3.access-key-id": "...",
    *       "azure.account-name": "...",
    *       "gcs.oauth2.token": "...",
+   *       "gcs.oauth2.token-expires-at": "1771456336352",  // optional, epoch ms
    *       ...
    *     }
    *   }]
