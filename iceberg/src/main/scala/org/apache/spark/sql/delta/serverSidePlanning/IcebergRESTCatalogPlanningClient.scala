@@ -243,6 +243,10 @@ class IcebergRESTCatalogPlanningClient(
     // where prefix comes from /v1/config?warehouse=<catalogName> per Iceberg REST spec.
     // See: https://iceberg.apache.org/rest-catalog-spec/
     val planTableScanUri = s"$icebergRestCatalogUriRoot/namespaces/$database/tables/$table/plan"
+    // scalastyle:off println
+    println(s"[IcebergRESTCatalogPlanningClient.planScan] POST $planTableScanUri " +
+      s"(filter=${sparkFilterOption.isDefined}, projection=${sparkProjectionOption.isDefined})")
+    // scalastyle:on println
 
     // Request planning for current snapshot. snapshotId = 0 means "use current snapshot"
     // in the Iceberg REST API spec. Time-travel queries are not yet supported.
@@ -289,6 +293,11 @@ class IcebergRESTCatalogPlanningClient(
     try {
       val statusCode = httpResponse.getStatusLine.getStatusCode
       val responseBody = EntityUtils.toString(httpResponse.getEntity)
+      // scalastyle:off println
+      println(s"[IcebergRESTCatalogPlanningClient.planScan] Response status=$statusCode " +
+        s"bodyLength=${responseBody.length} " +
+        s"hasStorageCreds=${responseBody.contains("storage-credentials")}")
+      // scalastyle:on println
       if (statusCode == HttpStatus.SC_OK || statusCode == HttpStatus.SC_CREATED) {
         // Parse response with caseSensitive=false to match request and Spark's case-insensitive
         // column handling
@@ -327,6 +336,10 @@ class IcebergRESTCatalogPlanningClient(
       responseBody: String): ScanPlan = {
     require(response != null, "PlanTableScanResponse cannot be null")
     require(response.fileScanTasks() != null, "File scan tasks cannot be null")
+    // scalastyle:off println
+    println(s"[IcebergRESTCatalogPlanningClient.convertToScanPlan] Parsing " +
+      s"${response.fileScanTasks().size()} file scan tasks, extracting credentials from response.")
+    // scalastyle:on println
 
     val files = response.fileScanTasks().asScala.map { task =>
       require(task != null, "FileScanTask cannot be null")
@@ -357,7 +370,15 @@ class IcebergRESTCatalogPlanningClient(
       )
     }.toSeq
 
+    // scalastyle:off println
+    println(s"[IcebergRESTCatalogPlanningClient.convertToScanPlan] Files=${files.size}, " +
+      "calling extractCredentials(responseBody).")
+    // scalastyle:on println
     val credentials = extractCredentials(responseBody)
+    // scalastyle:off println
+    println(s"[IcebergRESTCatalogPlanningClient.convertToScanPlan] Credentials=" +
+      s"${credentials.map(_.getClass.getSimpleName).getOrElse("None")}.")
+    // scalastyle:on println
     ScanPlan(files = files, credentials = credentials)
   }
 
@@ -383,6 +404,11 @@ class IcebergRESTCatalogPlanningClient(
    * Throws IllegalStateException if credentials are incomplete or malformed.
    */
   private def extractCredentials(responseBody: String): Option[ScanPlanStorageCredentials] = {
+    // scalastyle:off println
+    println(s"[IcebergRESTCatalogPlanningClient.extractCredentials] Full response body " +
+      s"(length=${responseBody.length}):")
+    println(responseBody)
+    // scalastyle:on println
     implicit val formats: Formats = DefaultFormats
     val json = parse(responseBody)
 
@@ -396,6 +422,16 @@ class IcebergRESTCatalogPlanningClient(
       case _: Exception => None // No credentials section in response
     }
 
+    // scalastyle:off println
+    if (config.isEmpty) {
+      println(s"[IcebergRESTCatalogPlanningClient.extractCredentials] No storage-credentials " +
+        "in response or config empty.")
+    } else {
+      println(s"[IcebergRESTCatalogPlanningClient.extractCredentials] Config keys from response: " +
+        s"${config.get.keys.toSeq.sorted.mkString(", ")}. " +
+        "Calling ScanPlanStorageCredentials.fromConfig.")
+    }
+    // scalastyle:on println
     // If config exists and is non-empty, use factory (throws on incomplete credentials)
     config.filter(_.nonEmpty).map(ScanPlanStorageCredentials.fromConfig)
   }

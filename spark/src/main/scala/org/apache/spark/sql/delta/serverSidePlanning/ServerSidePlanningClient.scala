@@ -182,9 +182,8 @@ object ScanPlanStorageCredentials {
 
   /** IRC config key mappings for each credential type. */
   private val S3_KEYS = Seq("s3.access-key-id", "s3.secret-access-key", "s3.session-token")
-  /** Azure ADLS keys: adls.sas-token.<account>.dfs.core.windows.net, adls.sas-token-expires-at-ms.<account>.dfs.core.windows.net */
-  private val AZURE_SAS_TOKEN_PREFIX = "adls.sas-token."
-  private val AZURE_SAS_TOKEN_SUFFIX = ".dfs.core.windows.net"
+  /** Azure ADLS: any key starting with adls.sas-token (e.g. 2 keys: token and expires-at-ms). */
+  private val AZURE_SAS_TOKEN_PREFIX = "adls.sas-token"
   private val GCS_KEYS = Seq("gcs.oauth2.token")
 
   /**
@@ -193,43 +192,77 @@ object ScanPlanStorageCredentials {
    * Throws IllegalStateException if credentials are incomplete or unrecognized.
    */
   def fromConfig(config: Map[String, String]): ScanPlanStorageCredentials = {
+    // scalastyle:off println
+    // Log all keys and values received from the server (WARNING: values may be secrets)
+    println(s"[ScanPlanStorageCredentials.fromConfig] Credential config from server: " +
+      s"${config.size} entries")
+    config.toSeq.sortBy(_._1).foreach { case (k, v) =>
+      println(s"  $k -> $v")
+    }
+    val keyList = config.keys.toSeq.sorted.mkString(", ")
+
     def get(key: String): String =
       config.getOrElse(key, throw new IllegalStateException(s"Missing required credential: $key"))
 
     def hasAny(keys: Seq[String]): Boolean = keys.exists(config.contains)
 
     def hasAzureKeys: Boolean =
-      config.keys.exists(k => k.startsWith(AZURE_SAS_TOKEN_PREFIX) && k.endsWith(AZURE_SAS_TOKEN_SUFFIX))
+      config.keys.exists(_.startsWith(AZURE_SAS_TOKEN_PREFIX))
 
     def buildAzureCredentials(): AzureCredentials = {
-      val sasTokenKey = config.keys.find { k =>
-        k.startsWith(AZURE_SAS_TOKEN_PREFIX) &&
-        k.endsWith(AZURE_SAS_TOKEN_SUFFIX) &&
-        !k.contains("sas-token-expires-at-ms")
-      }.getOrElse(throw new IllegalStateException(
-        s"Azure config missing adls.sas-token.<account>.dfs.core.windows.net key"))
-      val sasToken = get(sasTokenKey)
-      val accountName = sasTokenKey
-        .stripPrefix(AZURE_SAS_TOKEN_PREFIX)
-        .stripSuffix(AZURE_SAS_TOKEN_SUFFIX)
-      AzureCredentials(accountName = accountName, sasToken = sasToken, containerName = "")
+      // Collect all keys that start with adls.sas-token (both token and expires-at-ms); use as-is.
+      val credentialEntries = config.filterKeys(_.startsWith(AZURE_SAS_TOKEN_PREFIX)).toMap
+      if (credentialEntries.isEmpty) {
+        throw new IllegalStateException(
+          "Azure config missing key(s) starting with adls.sas-token.")
+      }
+      val azureKeys = credentialEntries.keys.toSeq.sorted.mkString(", ")
+      println(s"[ScanPlanStorageCredentials.fromConfig] Azure branch: using " +
+        s"${credentialEntries.size} key(s) as-is: $azureKeys")
+      // Derive account name from the SAS token key (non-expires) for fs.azure.sas.* compat.
+      val sasTokenKey = credentialEntries.keys.find(!_.contains("sas-token-expires-at-ms"))
+        .getOrElse(credentialEntries.keys.head)
+      val afterPrefix = sasTokenKey.stripPrefix(AZURE_SAS_TOKEN_PREFIX).stripPrefix(".")
+      val accountName = if (afterPrefix.endsWith(".dfs.core.windows.net")) {
+        afterPrefix.stripSuffix(".dfs.core.windows.net")
+      } else {
+        afterPrefix
+      }
+      println(s"[ScanPlanStorageCredentials.fromConfig] Azure credentials: accountName=" +
+        s"'$accountName', containerName='', entries=${credentialEntries.size}")
+      AzureCredentials(
+        accountName = accountName,
+        containerName = "",
+        credentialEntries = credentialEntries)
     }
 
     // Try each sealed trait subtype in priority order
     if (hasAny(S3_KEYS)) {
-      S3Credentials(
+      println(s"[ScanPlanStorageCredentials.fromConfig] Matched S3: config contains S3 keys " +
+        s"(${S3_KEYS.mkString(", ")}). Creating S3Credentials.")
+      val creds = S3Credentials(
         get("s3.access-key-id"),
         get("s3.secret-access-key"),
         get("s3.session-token"))
+      println(
+        s"[ScanPlanStorageCredentials.fromConfig] Created S3Credentials (values not logged).")
+      creds
     } else if (hasAzureKeys) {
+      println(s"[ScanPlanStorageCredentials.fromConfig] Matched Azure: config has key(s) " +
+        s"starting with '$AZURE_SAS_TOKEN_PREFIX' (using as-is).")
       buildAzureCredentials()
     } else if (hasAny(GCS_KEYS)) {
+      println(s"[ScanPlanStorageCredentials.fromConfig] Matched GCS: config contains " +
+        s"(${GCS_KEYS.mkString(", ")}). Creating GcsCredentials.")
       GcsCredentials(get("gcs.oauth2.token"))
     } else {
+      println(s"[ScanPlanStorageCredentials.fromConfig] Unrecognized credential keys: " +
+        s"[$keyList]. Expected S3, Azure, or GCS properties.")
       throw new IllegalStateException(
         s"Unrecognized credential keys: ${config.keys.mkString(", ")}. " +
           "Expected S3, Azure, or GCS properties.")
     }
+    // scalastyle:on println
   }
 }
 
@@ -242,12 +275,12 @@ case class S3Credentials(
     sessionToken: String) extends ScanPlanStorageCredentials
 
 /**
- * Azure ADLS Gen2 credentials with SAS token.
+ * Azure ADLS Gen2 credentials: all adls.sas-token* config entries (token + expires-at-ms) as-is.
  */
 case class AzureCredentials(
     accountName: String,
-    sasToken: String,
-    containerName: String) extends ScanPlanStorageCredentials
+    containerName: String,
+    credentialEntries: Map[String, String]) extends ScanPlanStorageCredentials
 
 /**
  * Google Cloud Storage OAuth2 token credentials.

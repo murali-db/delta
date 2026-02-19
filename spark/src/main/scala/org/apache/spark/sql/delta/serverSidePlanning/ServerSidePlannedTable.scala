@@ -103,6 +103,10 @@ object ServerSidePlannedTable extends DeltaLogging {
         skipUCRequirementForTests = DeltaUtils.isTesting)) {
       val namespace = ident.namespace().mkString(".")
       val tableName = ident.name()
+      // scalastyle:off println
+      println(s"[ServerSidePlannedTable.tryCreate] Using server-side planning for " +
+        s"$namespace.$tableName (UC=$isUnityCatalog, hasTableCreds=$hasTableCredentials).")
+      // scalastyle:on println
 
       // Create metadata from table
       val metadata = ServerSidePlanningMetadata.fromTable(table, spark, ident, isUnityCatalog)
@@ -116,6 +120,9 @@ object ServerSidePlannedTable extends DeltaLogging {
       }
       plannedTable
     } else {
+      // scalastyle:off println
+      println(s"[ServerSidePlannedTable.tryCreate] NOT using server-side planning")
+      // scalastyle:on println
       None
     }
   }
@@ -138,7 +145,16 @@ object ServerSidePlannedTable extends DeltaLogging {
       tableSchema: StructType,
       metadata: ServerSidePlanningMetadata): Option[ServerSidePlannedTable] = {
     try {
+      // scalastyle:off println
+      println(s"[ServerSidePlannedTable.tryCreate] Building planning client for " +
+        s"$databaseName.$tableName (catalog=${metadata.catalogName}, " +
+        s"endpoint=${metadata.planningEndpointUri}).")
+      // scalastyle:on println
       val client = ServerSidePlanningClientFactory.buildClient(spark, metadata)
+      // scalastyle:off println
+      println(s"[ServerSidePlannedTable.tryCreate] ServerSidePlannedTable created for " +
+        s"$databaseName.$tableName. Plan/creds will be fetched on first read.")
+      // scalastyle:on println
       Some(new ServerSidePlannedTable(spark, databaseName, tableName, tableSchema, client))
     } catch {
       case _: IllegalStateException =>
@@ -303,7 +319,7 @@ class ServerSidePlannedScan(
     planningClient: ServerSidePlanningClient,
     pushedFilters: Array[Filter],
     requiredSchema: StructType,
-    limit: Option[Int]) extends Scan with Batch {
+    limit: Option[Int]) extends Scan with Batch with DeltaLogging {
 
   override def readSchema(): StructType = requiredSchema
 
@@ -342,12 +358,24 @@ class ServerSidePlannedScan(
   }
 
   // Call the server-side planning API to get the scan plan with files AND credentials
-  private lazy val scanPlan: ScanPlan = planningClient.planScan(
-    databaseName,
-    tableName,
-    combinedFilter,
-    projectionColumnNames,
-    limit)
+  private lazy val scanPlan: ScanPlan = {
+    // scalastyle:off println
+    println(s"[ServerSidePlannedScan] Calling UC/IRC planScan for $databaseName.$tableName " +
+      s"(filter=${combinedFilter.isDefined}, projection=${projectionColumnNames.isDefined}, " +
+      s"limit=$limit).")
+    // scalastyle:on println
+    val plan = planningClient.planScan(
+      databaseName,
+      tableName,
+      combinedFilter,
+      projectionColumnNames,
+      limit)
+    // scalastyle:off println
+    println(s"[ServerSidePlannedScan] planScan returned files=${plan.files.size} " +
+      s"credentials=${plan.credentials.map(_.getClass.getSimpleName).getOrElse("None")}.")
+    // scalastyle:on println
+    plan
+  }
 
   // Explicitly signal that columnar is unsupported to prevent early enumeration of the partitions
   override def columnarSupportMode(): Scan.ColumnarSupportMode =
@@ -361,6 +389,12 @@ class ServerSidePlannedScan(
   }
 
   override def createReaderFactory(): PartitionReaderFactory = {
+    val credType = scanPlan.credentials.map(c => c.getClass.getSimpleName).getOrElse("None")
+    // scalastyle:off println
+    println(
+      s"[createReaderFactory] Building reader factory with credentials=$credType. " +
+      "Credentials are injected into Hadoop conf in ServerSidePlannedFilePartitionReaderFactory.")
+    // scalastyle:on println
     new ServerSidePlannedFilePartitionReaderFactory(
       spark, tableSchema, requiredSchema, scanPlan.credentials)
   }
@@ -406,9 +440,25 @@ class ServerSidePlannedFilePartitionReaderFactory(
     // Disable FileSystem cache for S3, Azure, and GCS so each scan uses fresh credentials
     // (avoids AccessDenied when temp creds expire and a cached FS is reused).
     // Aligns with CredPropsUtil in the Unity Catalog connector.
+    // scalastyle:off println
+    if (credentials.isEmpty) {
+      println(
+        s"[ServerSidePlannedFilePartitionReaderFactory] ScanPlanStorageCredentials: none " +
+        s"provided; Hadoop conf will not have storage credentials injected.")
+    }
     credentials.foreach { creds =>
       creds match {
         case S3Credentials(accessKeyId, secretAccessKey, sessionToken) =>
+          val s3ConfKeys = Seq(
+            "fs.s3a.path.style.access",
+            "fs.s3.impl.disable.cache",
+            "fs.s3a.impl.disable.cache",
+            "fs.s3a.access.key",
+            "fs.s3a.secret.key",
+            "fs.s3a.session.token")
+          println(s"[ServerSidePlannedFilePartitionReaderFactory] ScanPlanStorageCredentials " +
+            s"usage: injecting S3 credentials into Hadoop conf. Keys set (values not logged): " +
+            s"${s3ConfKeys.mkString(", ")}")
           conf.set("fs.s3a.path.style.access", "true")
           conf.set("fs.s3.impl.disable.cache", "true")
           conf.set("fs.s3a.impl.disable.cache", "true")
@@ -416,18 +466,33 @@ class ServerSidePlannedFilePartitionReaderFactory(
           conf.set("fs.s3a.secret.key", secretAccessKey)
           conf.set("fs.s3a.session.token", sessionToken)
 
-        case AzureCredentials(accountName, sasToken, containerName) =>
+        case AzureCredentials(accountName, _containerName, credentialEntries) =>
+          // ABFS 3.4.1+: auth.type + sas.fixed.token only; driver uses FixedSASTokenProvider by default.
+          val accountSuffix = s"$accountName.dfs.core.windows.net"
+          val sasTokenKey = credentialEntries.keys.find(!_.contains("sas-token-expires-at-ms"))
+            .getOrElse(credentialEntries.keys.head)
+          val sasTokenValue = credentialEntries(sasTokenKey)
           conf.set("fs.abfs.impl.disable.cache", "true")
           conf.set("fs.abfss.impl.disable.cache", "true")
-          // Format: fs.azure.sas.<container>.<account>.dfs.core.windows.net
-          val sasKey = s"fs.azure.sas.$containerName.$accountName.dfs.core.windows.net"
-          conf.set(sasKey, sasToken)
+          conf.set(s"fs.azure.account.auth.type.$accountSuffix", "SAS")
+          conf.set(s"fs.azure.sas.fixed.token.$accountSuffix", sasTokenValue)
+          val azureLog = s"[ServerSidePlannedFilePartitionReaderFactory] Azure credentials " +
+            s"(account=$accountName), keys and values set:\n  fs.abfs.impl.disable.cache = true\n" +
+            s"  fs.abfss.impl.disable.cache = true\n" +
+            s"  fs.azure.account.auth.type.$accountSuffix = SAS\n" +
+            s"  fs.azure.sas.fixed.token.$accountSuffix = $sasTokenValue"
+          println(azureLog)
 
         case GcsCredentials(oauth2Token) =>
+          val gcsConfKeys = Seq("fs.gs.impl.disable.cache", "fs.gs.auth.access.token")
+          println(s"[ServerSidePlannedFilePartitionReaderFactory] ScanPlanStorageCredentials " +
+            s"usage: injecting GCS credentials into Hadoop conf. Keys set (values not logged): " +
+            s"${gcsConfKeys.mkString(", ")}")
           conf.set("fs.gs.impl.disable.cache", "true")
           conf.set("fs.gs.auth.access.token", oauth2Token)
       }
     }
+    // scalastyle:on println
 
     new SerializableConfiguration(conf)
   }
