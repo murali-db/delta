@@ -486,16 +486,21 @@ class ServerSidePlannedFilePartitionReaderFactory(
         case GcsCredentials(oauth2Token, expirationEpochMs) =>
           conf.set("fs.gs.impl.disable.cache", "true")
           conf.set("fs.gs.auth.type", "ACCESS_TOKEN_PROVIDER")
-          conf.set("fs.gs.auth.access.token.provider",
-            "org.apache.spark.sql.delta.serverSidePlanning.gcs." +
-            "ConfBasedGcsAccessTokenProvider")
+          // Set both keys: UC uses fs.gs.auth.access.token.provider; some connector docs use .impl
+          val gcsProviderClass = "org.apache.spark.sql.delta.serverSidePlanning.gcs." +
+            "ConfBasedGcsAccessTokenProvider"
+          conf.set("fs.gs.auth.access.token.provider", gcsProviderClass)
+          conf.set("fs.gs.auth.access.token.provider.impl", gcsProviderClass)
           conf.set("fs.gs.auth.access.token", oauth2Token)
-          expirationEpochMs.foreach(ms => conf.set("fs.gs.auth.access.token.expiration.ms", ms.toString))
+          expirationEpochMs.foreach(ms =>
+            conf.set("fs.gs.auth.access.token.expiration.ms", ms.toString))
+          val gcsTokenExpKey = "fs.gs.auth.access.token.expiration.ms"
           val gcsConfKeys = Seq(
             "fs.gs.impl.disable.cache",
             "fs.gs.auth.type",
             "fs.gs.auth.access.token.provider",
-            "fs.gs.auth.access.token") ++ expirationEpochMs.toSeq.map(_ => "fs.gs.auth.access.token.expiration.ms")
+            "fs.gs.auth.access.token.provider.impl",
+            "fs.gs.auth.access.token") ++ expirationEpochMs.toSeq.map(_ => gcsTokenExpKey)
           println(s"[ServerSidePlannedFilePartitionReaderFactory] ScanPlanStorageCredentials " +
             s"usage: injecting GCS credentials (AccessTokenProvider). Keys set: " +
             s"${gcsConfKeys.mkString(", ")}")
