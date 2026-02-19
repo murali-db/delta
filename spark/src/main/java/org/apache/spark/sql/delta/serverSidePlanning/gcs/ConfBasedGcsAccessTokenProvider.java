@@ -19,8 +19,6 @@ package org.apache.spark.sql.delta.serverSidePlanning.gcs;
 import com.google.cloud.hadoop.util.AccessTokenProvider;
 import org.apache.hadoop.conf.Configuration;
 
-import java.time.Instant;
-
 /**
  * GCS AccessTokenProvider that reads token and optional expiration from Hadoop Configuration.
  * Used when server-side planning supplies temporary GCS OAuth2 credentials.
@@ -62,9 +60,13 @@ public class ConfBasedGcsAccessTokenProvider implements AccessTokenProvider {
     } else {
       expMs = System.currentTimeMillis() + FALLBACK_EXPIRATION_MS;
     }
-    System.out.println("[ConfBasedGcsAccessTokenProvider] getAccessToken() called: using token " +
-        "(expirationMs=" + expMs + ", fromConfig=" + (expStr != null && !expStr.isEmpty()) + ")");
-    return new AccessTokenProvider.AccessToken(token, Instant.ofEpochMilli(expMs));
+    // Use (String, Long) constructor for runtime compatibility with older util-hadoop on classpath
+    AccessTokenProvider.AccessToken accessToken =
+        new AccessTokenProvider.AccessToken(token, Long.valueOf(expMs));
+    System.out.println("[ConfBasedGcsAccessTokenProvider] getAccessToken() called: token=" + token
+        + ", expirationMs=" + expMs + ", fromConfig=" + (expStr != null && !expStr.isEmpty())
+        + "; returning AccessToken(token=" + accessToken.getToken() + ", expirationMs=" + expMs + ")");
+    return accessToken;
   }
 
   @Override

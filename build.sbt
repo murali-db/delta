@@ -338,7 +338,8 @@ lazy val sparkV1 = (project in file("spark"))
       // For DynamoDBCommitStore
       "com.amazonaws" % "aws-java-sdk" % "1.12.262" % "provided",
       // For ConfBasedGcsAccessTokenProvider (GCS server-side planning credentials)
-      "com.google.cloud.bigdataoss" % "util-hadoop" % "3.0.9" % "provided",
+      // Use hadoop2-2.2.x for compile: AccessToken is (String, Long). Runtime often has this API (e.g. UC/GCS).
+      "com.google.cloud.bigdataoss" % "util-hadoop" % "hadoop2-2.2.26" % "provided",
 
       // Test deps
       "org.scalatest" %% "scalatest" % scalaTestVersion % "test",
