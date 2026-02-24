@@ -34,14 +34,15 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       CREATE TABLE test_db.shared_test (
         id INT,
         name STRING,
-        value INT
+        value INT,
+        a STRUCT<`b.c`: STRING>
       ) USING parquet
     """)
     sql("""
-      INSERT INTO test_db.shared_test (id, name, value) VALUES
-      (1, 'alpha', 10),
-      (2, 'beta', 20),
-      (3, 'gamma', 30)
+      INSERT INTO test_db.shared_test (id, name, value, a) VALUES
+      (1, 'alpha', 10, struct('abc_1')),
+      (2, 'beta', 20, struct('abc_2')),
+      (3, 'gamma', 30, struct('abc_3'))
     """)
   }
 
@@ -268,7 +269,7 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
     assert(metadata.tableProperties.isEmpty)
   }
 
-  test("UnityCatalogMetadata constructs IRC endpoint from UC URI") {
+  test("UnityCatalogMetadata constructs base IRC endpoint from UC URI") {
     val ucUri = "https://unity-catalog-server.example.com"
     val metadata = UnityCatalogMetadata(
       catalogName = "test_catalog",
@@ -277,13 +278,12 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       tableProps = Map.empty
     )
 
-    // This test validates the fallback case where /v1/config is unreachable.
-    // The endpoint construction logic attempts to call /v1/config at the UC URI,
-    // but since there's no server at this URL, it falls back to the simple path
-    // without prefix. For tests of the prefix case with a real IRC server, see
-    // IcebergRESTCatalogPlanningClientSuite.
+    // UnityCatalogMetadata returns the base Iceberg REST path up to /v1.
+    // The IcebergRESTCatalogPlanningClient then calls config to get the prefix
+    // and constructs the full endpoint URL per the Iceberg REST catalog spec.
     val expectedEndpoint =
-      "https://unity-catalog-server.example.com/api/2.1/unity-catalog/iceberg-rest"
+      "https://unity-catalog-server.example.com/api/2.1/unity-catalog/" +
+      "iceberg-rest/v1"
     assert(metadata.planningEndpointUri == expectedEndpoint)
   }
 
@@ -363,17 +363,27 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
     }
   }
 
+  test("projection escaping with dotted column names") {
+    withPushdownCapturingEnabled {
+      sql("SELECT a.`b.c` FROM test_db.shared_test").collect()
+
+      val capturedProjection = TestServerSidePlanningClient.getCapturedProjection
+      assert(capturedProjection.isDefined, "Projection should be pushed down")
+      assert(capturedProjection.get == Seq("a.`b.c`"),
+        s"Expected escaped [a.`b.c`], got ${capturedProjection.get}")
+    }
+  }
+
   test("projection and filter pushed together") {
     withPushdownCapturingEnabled {
       sql("SELECT id FROM test_db.shared_test WHERE value > 10").collect()
 
-      // Verify projection was pushed with exactly the expected columns
-      // Spark needs 'id' for SELECT and 'value' for WHERE clause
       val capturedProjection = TestServerSidePlanningClient.getCapturedProjection
       assert(capturedProjection.isDefined, "Projection should be pushed down")
       val projectedFields = capturedProjection.get.toSet
-      assert(projectedFields == Set("id", "value"),
-        s"Expected projection with exactly {id, value}, got {${projectedFields.mkString(", ")}}")
+      assert(projectedFields == Set("id"),
+        s"Expected projection with only SELECT columns {id}, " +
+        s"got {${projectedFields.mkString(", ")}}")
 
       // Verify filter was also pushed
       val capturedFilter = TestServerSidePlanningClient.getCapturedFilter
@@ -386,6 +396,93 @@ class ServerSidePlannedTableSuite extends QueryTest with DeltaSQLCommandTest {
       }
       assert(gtFilter.isDefined, "Expected GreaterThan filter on 'value'")
       assert(gtFilter.get.value == 10, s"Expected GreaterThan value 10, got ${gtFilter.get.value}")
+    }
+  }
+
+  test("projection and limit pushed together") {
+    withPushdownCapturingEnabled {
+      sql("SELECT id FROM test_db.shared_test LIMIT 5").collect()
+
+      // Verify projection was pushed (only 'id' column)
+      val capturedProjection = TestServerSidePlanningClient.getCapturedProjection
+      assert(capturedProjection.isDefined, "Projection should be pushed down")
+      val projectedFields = capturedProjection.get.toSet
+      assert(projectedFields == Set("id"),
+        s"Expected projection with just {id}, got {${projectedFields.mkString(", ")}}")
+
+      // Verify limit was pushed
+      val capturedLimit = TestServerSidePlanningClient.getCapturedLimit
+      assert(capturedLimit.isDefined, "Limit should be pushed down")
+      assert(capturedLimit.get == 5, s"Expected limit 5, got ${capturedLimit.get}")
+    }
+  }
+
+  test("limit pushed to planning client") {
+    withPushdownCapturingEnabled {
+      sql("SELECT id, name, value FROM test_db.shared_test LIMIT 2").collect()
+
+      val capturedLimit = TestServerSidePlanningClient.getCapturedLimit
+      assert(capturedLimit.isDefined, "Limit should be pushed down")
+      assert(capturedLimit.get == 2, s"Expected limit 2, got ${capturedLimit.get}")
+    }
+  }
+
+  test("no limit pushed when no LIMIT clause") {
+    withPushdownCapturingEnabled {
+      sql("SELECT id, name, value FROM test_db.shared_test").collect()
+
+      val capturedLimit = TestServerSidePlanningClient.getCapturedLimit
+      assert(capturedLimit.isEmpty, "No limit should be pushed when there's no LIMIT clause")
+    }
+  }
+
+  test("filter and limit pushed together when all filters are convertible") {
+    withPushdownCapturingEnabled {
+      // Query with convertible filter (GreaterThan) AND limit
+      sql("SELECT id FROM test_db.shared_test WHERE value > 10 LIMIT 5").collect()
+
+      // Verify filter was captured
+      val capturedFilter = TestServerSidePlanningClient.getCapturedFilter
+      assert(capturedFilter.isDefined, "Filter should be pushed to server")
+
+      // Verify limit was captured (this is the key test - limit pushdown with filters)
+      val capturedLimit = TestServerSidePlanningClient.getCapturedLimit
+      assert(capturedLimit.isDefined,
+        "Limit should be pushed to server when all filters are convertible")
+      assert(capturedLimit.get == 5, s"Expected limit 5, got ${capturedLimit.get}")
+    }
+  }
+
+  test("limit NOT pushed when any filter is unconvertible") {
+    withPushdownCapturingEnabled {
+      // Configure the test client to treat filters as unconvertible
+      // This simulates a scenario where the filter cannot be converted to server's native format
+      TestServerSidePlanningClient.setFiltersConvertible(false)
+
+      try {
+        // Query with filter AND limit
+        sql("SELECT id FROM test_db.shared_test WHERE value > 10 LIMIT 5").collect()
+
+        // Verify filter was still captured (server receives it)
+        val capturedFilter = TestServerSidePlanningClient.getCapturedFilter
+        assert(capturedFilter.isDefined, "Filter should still be sent to server")
+
+        // Verify limit was NOT captured (because residual filters blocked pushdown)
+        val capturedLimit = TestServerSidePlanningClient.getCapturedLimit
+        assert(capturedLimit.isEmpty,
+          "Limit should NOT be pushed when any filter is unconvertible")
+      } finally {
+        // Reset to default (convertible) for other tests
+        TestServerSidePlanningClient.setFiltersConvertible(true)
+      }
+    }
+  }
+
+  test("avoid planInputPartitions call during Spark query planning") {
+    withPushdownCapturingEnabled {
+      sql("EXPLAIN EXTENDED SELECT id, name FROM test_db.shared_test").collect()
+      val capturedProjection = TestServerSidePlanningClient.getCapturedProjection
+      assert(capturedProjection.isEmpty, "Should not fire a planTable request for EXPLAIN")
     }
   }
 }

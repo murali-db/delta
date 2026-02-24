@@ -48,7 +48,6 @@ import org.junit.jupiter.api.TestFactory;
  * <p>Subclasses must provide an executor by implementing the getSqlExecutor method.
  */
 public abstract class UCDeltaTableIntegrationBaseTest extends UnityCatalogSupport {
-
   public static final List<TableType> ALL_TABLE_TYPES =
       List.of(TableType.EXTERNAL, TableType.MANAGED);
 
@@ -109,8 +108,12 @@ public abstract class UCDeltaTableIntegrationBaseTest extends UnityCatalogSuppor
   }
 
   private SparkConf configureSparkWithUnityCatalog(SparkConf conf) {
-    // Set the AWS S3 implementation for remote unity catalog server testing.
-    conf.set("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem");
+    // Use fake S3 filesystem for local testing; real S3A for remote UC.
+    if (isUCRemoteConfigured()) {
+      conf.set("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem");
+    } else {
+      conf.set("spark.hadoop.fs.s3.impl", S3CredentialFileSystem.class.getName());
+    }
 
     // Set the catalog specific configs.
     UnityCatalogInfo uc = unityCatalogInfo();
