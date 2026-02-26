@@ -52,6 +52,10 @@ case class UpdatePOMetricsHook(catalogTable: Option[CatalogTable])
 
   override val name: String = "Update PO Metrics"
 
+  // Key injected by the open-source UCSingleCatalog into CatalogTable.storage.properties.
+  // Delta's DeltaTableV2.properties() surfaces this as "option.fs.unitycatalog.table.id".
+  private val UC_TABLE_ID_STORAGE_KEY = "fs.unitycatalog.table.id"
+
   // Default bin boundaries for the file size histogram (in bytes).
   // Must start at 0. Boundaries cover the typical Parquet file size range.
   private val FILE_SIZE_BIN_BOUNDARIES: IndexedSeq[Long] = IndexedSeq(
@@ -231,11 +235,19 @@ case class UpdatePOMetricsHook(catalogTable: Option[CatalogTable])
   /**
    * Resolves the table ID to send in the PO metrics payload.
    *
-   * Prefers the UC table ID stored in CatalogTable.properties (injected by the UC connector
-   * when loading the table) over DeltaLog.tableId (Delta Metadata.id). These differ when the
-   * first Delta commit was written by a non-DBR client: such a client generates a random UUID
-   * for Metadata.id rather than using the UC-registered table ID, causing the PO endpoint to
-   * return 404. For DBR-created tables both IDs are identical, so the fallback is safe.
+   * Resolution order (first non-empty wins):
+   *  1. CatalogTable.properties["io.unitycatalog.tableId"]
+   *     set by the Databricks-internal UC connector
+   *  2. CatalogTable.properties["ucTableId"]
+   *     legacy Databricks-internal key
+   *  3. CatalogTable.storage.properties["fs.unitycatalog.table.id"]
+   *     set by the open-source UCSingleCatalog connector
+   *  4. DeltaLog.tableId (Delta Metadata.id)
+   *     fallback; matches UC ID on DBR-created tables
+   *
+   * The Delta Metadata.id diverges from the UC-registered table ID when the first Delta commit
+   * was written by a non-DBR client (which generates a random UUID), causing the PO endpoint
+   * to return 404. The catalog properties always carry the authoritative UC-registered table ID.
    */
   private[hooks] def resolveTableId(
       catalogTable: Option[CatalogTable],
@@ -244,6 +256,7 @@ case class UpdatePOMetricsHook(catalogTable: Option[CatalogTable])
       .flatMap { ct =>
         ct.properties.get(UC_TABLE_ID_KEY)
           .orElse(ct.properties.get(UC_TABLE_ID_KEY_OLD))
+          .orElse(ct.storage.properties.get(UC_TABLE_ID_STORAGE_KEY))
           .filter(_.nonEmpty)
       }
       .getOrElse(deltaLog.tableId)

@@ -57,13 +57,13 @@ class UpdatePOMetricsHookSuite extends QueryTest
   // resolveTableId tests
   // ---------------------------------------------------------------------------
 
-  test("resolveTableId: prefers UC table ID from catalogTable.properties over deltaLog.tableId") {
+  test("resolveTableId: prefers UC table ID from catalogTable properties over deltaLog.tableId") {
     withTempDir { dir =>
       spark.range(1).write.format("delta").save(dir.getCanonicalPath)
       val deltaLog = DeltaLog.forTable(spark, dir.getCanonicalPath)
       val hook = UpdatePOMetricsHook(None)
 
-      // Sub-case 1: io.unitycatalog.tableId present -> use it, not deltaLog.tableId
+      // Sub-case 1: io.unitycatalog.tableId in ct.properties (Databricks-internal connector)
       val ctWithUCId = CatalogTable(
         identifier = TableIdentifier("t", Some("s"), Some("c")),
         tableType = CatalogTableType.MANAGED,
@@ -72,9 +72,9 @@ class UpdatePOMetricsHookSuite extends QueryTest
         properties = Map("io.unitycatalog.tableId" -> "uc-uuid-123")
       )
       assert(hook.resolveTableId(Some(ctWithUCId), deltaLog) == "uc-uuid-123",
-        "UC table ID from properties must win over deltaLog.tableId")
+        "UC table ID from ct.properties must win over deltaLog.tableId")
 
-      // Sub-case 2: legacy key ucTableId -> use it
+      // Sub-case 2: legacy ucTableId in ct.properties (Databricks-internal legacy key)
       val ctWithLegacyId = CatalogTable(
         identifier = TableIdentifier("t", Some("s"), Some("c")),
         tableType = CatalogTableType.MANAGED,
@@ -85,7 +85,25 @@ class UpdatePOMetricsHookSuite extends QueryTest
       assert(hook.resolveTableId(Some(ctWithLegacyId), deltaLog) == "legacy-uuid-456",
         "legacy ucTableId key must be honoured")
 
-      // Sub-case 3: no UC table ID in properties -> fall back to deltaLog.tableId
+      // Sub-case 3: fs.unitycatalog.table.id in ct.storage.properties
+      // (open-source UCSingleCatalog; Delta surfaces this as "option.fs.unitycatalog.table.id")
+      val ctWithStorageId = CatalogTable(
+        identifier = TableIdentifier("t", Some("s"), Some("c")),
+        tableType = CatalogTableType.MANAGED,
+        storage = CatalogStorageFormat(
+          locationUri = None,
+          inputFormat = None,
+          outputFormat = None,
+          serde = None,
+          compressed = false,
+          properties = Map("fs.unitycatalog.table.id" -> "storage-uuid-789")
+        ),
+        schema = new StructType()
+      )
+      assert(hook.resolveTableId(Some(ctWithStorageId), deltaLog) == "storage-uuid-789",
+        "fs.unitycatalog.table.id from storage.properties must win over deltaLog.tableId")
+
+      // Sub-case 4: no UC table ID anywhere -> fall back to deltaLog.tableId
       val ctNoId = CatalogTable(
         identifier = TableIdentifier("t", Some("s"), Some("c")),
         tableType = CatalogTableType.MANAGED,
@@ -93,9 +111,9 @@ class UpdatePOMetricsHookSuite extends QueryTest
         schema = new StructType()
       )
       assert(hook.resolveTableId(Some(ctNoId), deltaLog) == deltaLog.tableId,
-        "must fall back to deltaLog.tableId when properties have no UC table ID")
+        "must fall back to deltaLog.tableId when no UC table ID is found")
 
-      // Sub-case 4: no catalogTable at all -> fall back to deltaLog.tableId
+      // Sub-case 5: no catalogTable at all -> fall back to deltaLog.tableId
       assert(hook.resolveTableId(None, deltaLog) == deltaLog.tableId,
         "must fall back to deltaLog.tableId when catalogTable is None")
     }
