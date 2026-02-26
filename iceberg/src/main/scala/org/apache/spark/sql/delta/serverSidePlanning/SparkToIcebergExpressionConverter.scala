@@ -175,6 +175,7 @@ private[serverSidePlanning] object SparkToIcebergExpressionConverter extends Log
     case v: Double => v: java.lang.Double
     case v: java.math.BigDecimal => v
     case v: String => v
+    case v: Array[Byte] => java.nio.ByteBuffer.wrap(v)
     case v: Boolean if supportBoolean => v: java.lang.Boolean
     case _ => value
   }
