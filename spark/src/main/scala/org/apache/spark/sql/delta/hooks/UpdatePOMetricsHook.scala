@@ -17,13 +17,12 @@
 package org.apache.spark.sql.delta.hooks
 
 // scalastyle:off import.ordering.noEmptyLine
-import scala.collection.mutable
-
 import org.apache.spark.sql.delta.{CommittedTransaction, DeltaLog}
 import org.apache.spark.sql.delta.actions.{Action, AddFile, CommitInfo, RemoveFile}
 import org.apache.spark.sql.delta.logging.DeltaLogKeys
 import org.apache.spark.sql.delta.metering.DeltaLogging
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
+import org.apache.spark.sql.delta.stats.FileSizeHistogram
 
 import org.apache.spark.internal.MDC
 import org.apache.spark.sql.SparkSession
@@ -33,76 +32,64 @@ import org.apache.spark.sql.catalyst.catalog.CatalogTable
  * Post-commit hook that sends commit metrics to the PO (Predictive Optimization) endpoint
  * for Unity Catalog managed Delta tables.
  *
- * This hook is triggered after each successful Delta commit and sends file-level and row-level
- * metrics to the UC endpoint for PO analysis. The hook follows a best-effort delivery model:
- * failures are logged but do not block the commit.
+ * Endpoint: POST /api/2.1/unity-catalog/delta/preview/metrics
  *
- * The hook is only activated for tables that:
- * - Have the PO metrics feature enabled (spark.databricks.delta.po.metrics.enabled)
- * - Are Unity Catalog managed tables
+ * The server validates:
+ *  - table_id must match a known UC Delta table
+ *  - commit_version (in file_size_histogram) must be within validCommitVersionWindow of
+ *    the latest table version tracked by UC
+ *  - All numeric fields must be non-negative
  *
- * @param catalogTable The catalog table metadata (if available)
+ * This hook is best-effort: failures are logged as warnings but never fail the commit.
+ *
+ * @param catalogTable The catalog table metadata (required to identify UC-managed tables)
  */
 case class UpdatePOMetricsHook(catalogTable: Option[CatalogTable])
     extends PostCommitHook with DeltaLogging {
 
   override val name: String = "Update PO Metrics"
 
+  // Default bin boundaries for the file size histogram (in bytes).
+  // Must start at 0. Boundaries cover the typical Parquet file size range.
+  private val FILE_SIZE_BIN_BOUNDARIES: IndexedSeq[Long] = IndexedSeq(
+    0L,
+    8L * 1024, // 8 KB
+    64L * 1024, // 64 KB
+    512L * 1024, // 512 KB
+    1L << 20, // 1 MB
+    4L << 20, // 4 MB
+    8L << 20, // 8 MB
+    16L << 20, // 16 MB
+    32L << 20, // 32 MB
+    64L << 20, // 64 MB
+    128L << 20, // 128 MB
+    256L << 20, // 256 MB
+    512L << 20, // 512 MB
+    1L << 30 // 1 GB
+  )
+
   override def run(spark: SparkSession, txn: CommittedTransaction): Unit = {
-    // Check if hook is enabled
-    if (!spark.conf.get(DeltaSQLConf.DELTA_PO_METRICS_ENABLED)) {
-      logDebug("PO metrics hook is disabled, skipping")
-      return
-    }
+    if (!spark.conf.get(DeltaSQLConf.DELTA_PO_METRICS_ENABLED)) return
 
-    // Check if table is UC-managed
-    if (!isUCManagedTable(txn.deltaLog, catalogTable)) {
-      logDebug("Table is not a UC-managed table, skipping PO metrics")
-      return
-    }
+    if (!isUCManagedTable(txn.deltaLog, catalogTable)) return
 
-    // Check if endpoint is configured
-    if (!spark.conf.get(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key).exists(_.nonEmpty)) {
+    if (!spark.conf.getOption(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key).exists(_.nonEmpty)) {
       logInfo("PO metrics endpoint not configured, skipping")
       return
     }
 
     try {
-      // Extract metrics from the committed transaction
-      val metrics = extractMetrics(txn.committedActions)
-
-      // Get operation from CommitInfo
-      val operation = getOperation(txn.committedActions)
-
-      // Get partition info if table is partitioned
-      val partitionInfo = extractPartitionInfo(txn)
-
-      // Get table metadata
-      val tableId = txn.deltaLog.tableId.getOrElse {
+      val tableId = txn.deltaLog.tableId
+      if (tableId.isEmpty) {
         throw new IllegalStateException("UC-managed table must have a table ID")
       }
 
-      val tableName = getTableName(catalogTable)
-
-      // Get timestamp from CommitInfo or use current time
-      val timestamp = getTimestamp(txn.committedActions)
-
-      // Build payload
-      val payload = POMetricsPayload(
-        tableId = tableId,
-        tableName = tableName,
-        version = txn.committedVersion,
-        timestamp = timestamp,
-        operation = operation,
-        metrics = metrics,
-        partitionInfo = partitionInfo
-      )
-
-      // Send metrics to PO endpoint
-      POMetricsClient.sendMetrics(spark, payload)
+      val request = buildRequest(tableId, txn.committedActions, txn.committedVersion)
+      POMetricsClient.sendMetrics(spark, request)
 
       logInfo(
-        log"Successfully sent PO metrics for table ${MDC(DeltaLogKeys.TABLE_NAME, tableName)} " +
+        log"Successfully sent PO metrics for table " +
+        log"${MDC(DeltaLogKeys.PATH, txn.deltaLog.logPath)} " +
         log"version ${MDC(DeltaLogKeys.VERSION, txn.committedVersion)}")
 
     } catch {
@@ -115,170 +102,141 @@ case class UpdatePOMetricsHook(catalogTable: Option[CatalogTable])
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Request builder - package-private for direct testing without Delta infrastructure
+  // ---------------------------------------------------------------------------
+
+  private[hooks] def buildRequest(
+      tableId: String,
+      committedActions: Seq[Action],
+      committedVersion: Long): ReportDeltaMetricsRequest = {
+    val commitInfo = committedActions.collectFirst { case ci: CommitInfo => ci }
+    val opMetrics = commitInfo.flatMap(_.operationMetrics).getOrElse(Map.empty)
+
+    val addFiles = committedActions.collect { case a: AddFile => a }
+    val removeFiles = committedActions.collect { case r: RemoveFile => r }
+
+    val commitReport = CommitReport(
+      numFilesAdded = Some(addFiles.size.toLong),
+      numFilesRemoved = Some(removeFiles.size.toLong),
+      numBytesAdded = Some(addFiles.map(_.size).sum),
+      numBytesRemoved = Some(removeFiles.flatMap(_.size).sum),
+      numClusteredBytesAdded = Some(
+        addFiles.filter(_.clusteringProvider.isDefined).map(_.size).sum),
+      // num_clustered_bytes_removed: not available - RemoveFile has no clusteringProvider
+      numRowsInserted = extractRowsInserted(opMetrics, addFiles),
+      numRowsRemoved = extractRowsRemoved(opMetrics, removeFiles),
+      numRowsUpdated = extractRowsUpdated(opMetrics),
+      fileSizeHistogram = Some(buildFileSizeHistogram(addFiles, committedVersion))
+    )
+
+    ReportDeltaMetricsRequest(
+      tableId = tableId,
+      report = CommitReportEnvelope(commitReport)
+    )
+  }
+
   override def handleError(spark: SparkSession, error: Throwable, version: Long): Unit = {
-    // Override default error handling to always log as warning and never throw
-    // This ensures PO metrics failures don't block commits
     logWarning(
       log"PO metrics hook failed for version ${MDC(DeltaLogKeys.VERSION, version)}: " +
       log"${MDC(DeltaLogKeys.ERROR, error.getMessage)}", error)
   }
 
-  /**
-   * Checks if the table is a Unity Catalog managed table.
-   *
-   * A table is considered UC-managed if:
-   * - It has a valid table ID (required for UC tables)
-   * - It has catalog information in the CatalogTable metadata
-   *
-   * @param deltaLog The DeltaLog for the table
-   * @param catalogTable The optional catalog table metadata
-   * @return true if the table is UC-managed, false otherwise
-   */
-  private def isUCManagedTable(
-      deltaLog: DeltaLog,
-      catalogTable: Option[CatalogTable]): Boolean = {
-    // Check if table has a valid table ID
-    if (deltaLog.tableId.isEmpty) {
-      return false
-    }
+  // ---------------------------------------------------------------------------
+  // Row metric extraction - prefer operationMetrics for accuracy; fall back to
+  // file-level numLogicalRecords when operationMetrics are absent (e.g. external
+  // writers that don't emit CommitInfo, or simple WRITE operations).
+  // ---------------------------------------------------------------------------
 
-    // Check if catalog information is present
-    catalogTable match {
-      case Some(ct) =>
-        // Check if catalog is defined (UC tables have catalog.schema.table structure)
-        ct.identifier.catalog.isDefined ||
-        // Or check if table properties indicate it's a Delta table with UC support
-        (ct.properties.get("provider").exists(_.toLowerCase(java.util.Locale.ROOT) == "delta") &&
-          deltaLog.tableId.isDefined)
-      case None =>
-        false
-    }
+  /**
+   * numRowsInserted:
+   *  - MERGE  -&gt; numTargetRowsInserted
+   *  - WRITE / STREAMING_UPDATE -&gt; numOutputRows
+   *  - fallback -&gt; sum of AddFile.numLogicalRecords
+   */
+  private def extractRowsInserted(
+      opMetrics: Map[String, String],
+      addFiles: Seq[AddFile]): Option[Long] = {
+    opMetrics.get("numTargetRowsInserted")
+      .orElse(opMetrics.get("numOutputRows"))
+      .flatMap(toLong)
+      .orElse {
+        val fromStats = addFiles.flatMap(_.numLogicalRecords)
+        if (fromStats.nonEmpty) Some(fromStats.sum) else None
+      }
   }
 
   /**
-   * Extracts file and row metrics from the committed actions.
-   *
-   * @param actions The actions committed in the transaction
-   * @return POMetrics containing file and row-level statistics
+   * numRowsRemoved:
+   *  - MERGE  -&gt; numTargetRowsDeleted
+   *  - DELETE -&gt; numDeletedRows
+   *  - fallback -&gt; sum of RemoveFile.numLogicalRecords
    */
-  private def extractMetrics(actions: Seq[Action]): POMetrics = {
-    var numFilesAdded = 0L
-    var numBytesAdded = 0L
-    var numRowsAdded = 0L
-    var numFilesRemoved = 0L
-    var numBytesRemoved = 0L
-    var numRowsRemoved = 0L
+  private def extractRowsRemoved(
+      opMetrics: Map[String, String],
+      removeFiles: Seq[RemoveFile]): Option[Long] = {
+    opMetrics.get("numTargetRowsDeleted")
+      .orElse(opMetrics.get("numDeletedRows"))
+      .flatMap(toLong)
+      .orElse {
+        val fromStats = removeFiles.flatMap(_.numLogicalRecords)
+        if (fromStats.nonEmpty) Some(fromStats.sum) else None
+      }
+  }
 
-    actions.foreach {
-      case add: AddFile =>
-        numFilesAdded += 1
-        numBytesAdded += add.size
-        // Extract row count from stats if available
-        add.numLogicalRecords.foreach { rowCount =>
-          numRowsAdded += rowCount
-        }
+  /**
+   * numRowsUpdated:
+   *  - MERGE  -&gt; numTargetRowsUpdated
+   *  - UPDATE -&gt; numUpdatedRows
+   *  - No file-level fallback (updated rows are indistinguishable from inserts in file stats)
+   */
+  private def extractRowsUpdated(opMetrics: Map[String, String]): Option[Long] = {
+    opMetrics.get("numTargetRowsUpdated")
+      .orElse(opMetrics.get("numUpdatedRows"))
+      .flatMap(toLong)
+  }
 
-      case remove: RemoveFile =>
-        numFilesRemoved += 1
-        // Size is optional in RemoveFile
-        remove.size.foreach { fileSize =>
-          numBytesRemoved += fileSize
-        }
-        // Extract row count from stats if available
-        remove.numLogicalRecords.foreach { rowCount =>
-          numRowsRemoved += rowCount
-        }
+  private def toLong(s: String): Option[Long] =
+    try Some(s.toLong)
+    catch { case _: NumberFormatException => None }
 
-      case _ => // Ignore other action types
-    }
+  // ---------------------------------------------------------------------------
+  // File size histogram
+  // ---------------------------------------------------------------------------
 
-    POMetrics(
-      numFilesAdded = numFilesAdded,
-      numBytesAdded = numBytesAdded,
-      numFilesRemoved = numFilesRemoved,
-      numBytesRemoved = numBytesRemoved,
-      numRowsAdded = numRowsAdded,
-      numRowsRemoved = numRowsRemoved
+  /**
+   * Builds a file-size histogram from the AddFiles in this commit.
+   * commit_version is required by the server to validate the payload is not stale.
+   */
+  private def buildFileSizeHistogram(
+      addFiles: Seq[AddFile],
+      committedVersion: Long): FileSizeHistogramPayload = {
+    val histogram = FileSizeHistogram(FILE_SIZE_BIN_BOUNDARIES)
+    addFiles.foreach(f => histogram.insert(f.size))
+    FileSizeHistogramPayload(
+      sortedBinBoundaries = histogram.sortedBinBoundaries,
+      fileCounts = histogram.fileCounts.toSeq,
+      totalBytes = histogram.totalBytes.toSeq,
+      commitVersion = Some(committedVersion)
     )
   }
 
-  /**
-   * Extracts the operation name from CommitInfo action.
-   *
-   * @param actions The actions committed in the transaction
-   * @return The operation name (e.g., "WRITE", "DELETE", "MERGE"), or "UNKNOWN" if not found
-   */
-  private def getOperation(actions: Seq[Action]): String = {
-    actions.collectFirst {
-      case ci: CommitInfo => ci.operation
-    }.getOrElse("UNKNOWN")
-  }
+  // ---------------------------------------------------------------------------
+  // UC table detection
+  // ---------------------------------------------------------------------------
 
-  /**
-   * Extracts partition information from the committed transaction.
-   *
-   * Returns a map of partition column names to the set of unique values touched by this commit.
-   * Only returns partition info if the table is partitioned and partitions were added.
-   *
-   * @param txn The committed transaction
-   * @return Optional map of partition column name to set of values
-   */
-  private def extractPartitionInfo(
-      txn: CommittedTransaction): Option[Map[String, Set[String]]] = {
-    txn.partitionsAddedToOpt.flatMap { partitionsAdded =>
-      if (partitionsAdded.isEmpty) {
-        None
-      } else {
-        // Convert HashSet[Map[String, String]] to Map[String, Set[String]]
-        // Group by partition column name and collect unique values
-        val partitionMap = mutable.Map[String, mutable.Set[String]]()
+  private def isUCManagedTable(
+      deltaLog: DeltaLog,
+      catalogTable: Option[CatalogTable]): Boolean = {
+    if (deltaLog.tableId.isEmpty) return false
 
-        partitionsAdded.foreach { partitionValues =>
-          partitionValues.foreach { case (columnName, value) =>
-            partitionMap.getOrElseUpdate(columnName, mutable.Set[String]()) += value
-          }
-        }
-
-        if (partitionMap.isEmpty) {
-          None
-        } else {
-          Some(partitionMap.map { case (k, v) => (k, v.toSet) }.toMap)
-        }
-      }
+    catalogTable match {
+      case Some(ct) =>
+        ct.identifier.catalog.isDefined ||
+        (ct.properties.get("provider").exists(
+          _.toLowerCase(java.util.Locale.ROOT) == "delta") &&
+          deltaLog.tableId.nonEmpty)
+      case None => false
     }
-  }
-
-  /**
-   * Gets the fully qualified table name.
-   *
-   * @param catalogTable The optional catalog table metadata
-   * @return The table name in format "catalog.schema.table" or "unknown"
-   */
-  private def getTableName(catalogTable: Option[CatalogTable]): String = {
-    catalogTable.map { ct =>
-      val catalog = ct.identifier.catalog.getOrElse("")
-      val database = ct.identifier.database.getOrElse("")
-      val table = ct.identifier.table
-
-      if (catalog.nonEmpty) {
-        s"$catalog.$database.$table"
-      } else if (database.nonEmpty) {
-        s"$database.$table"
-      } else {
-        table
-      }
-    }.getOrElse("unknown")
-  }
-
-  /**
-   * Extracts the commit timestamp from CommitInfo action.
-   *
-   * @param actions The actions committed in the transaction
-   * @return The commit timestamp in milliseconds, or current time if not found
-   */
-  private def getTimestamp(actions: Seq[Action]): Long = {
-    actions.collectFirst {
-      case ci: CommitInfo => ci.timestamp.getTime
-    }.getOrElse(System.currentTimeMillis())
   }
 }

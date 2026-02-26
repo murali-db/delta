@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.delta.hooks
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.util.JsonUtils
 
@@ -28,67 +29,79 @@ import org.apache.http.util.EntityUtils
 import org.apache.spark.sql.SparkSession
 
 /**
- * Case class representing the metrics payload to send to the PO endpoint.
+ * Top-level request body for POST /api/2.1/unity-catalog/delta/preview/metrics.
  *
- * @param tableId The unique identifier for the table (from DeltaLog.tableId)
- * @param tableName The fully qualified table name (catalog.schema.table)
- * @param version The Delta table version after the commit
- * @param timestamp The commit timestamp in milliseconds
- * @param operation The operation type (e.g., WRITE, DELETE, MERGE)
- * @param metrics The file and row-level metrics
- * @param partitionInfo Optional partition information (map of column name to set of values)
+ * @param tableId UUID of the UC-managed Delta table
+ * @param report  The commit metrics, wrapped in a typed report envelope
  */
-case class POMetricsPayload(
-    tableId: String,
-    tableName: String,
-    version: Long,
-    timestamp: Long,
-    operation: String,
-    metrics: POMetrics,
-    partitionInfo: Option[Map[String, Set[String]]])
+case class ReportDeltaMetricsRequest(
+    @JsonProperty("table_id") tableId: String,
+    @JsonProperty("report") report: CommitReportEnvelope)
 
 /**
- * Case class representing file and row-level metrics.
- *
- * @param numFilesAdded Number of files added in the commit
- * @param numBytesAdded Total bytes added in the commit
- * @param numFilesRemoved Number of files removed in the commit
- * @param numBytesRemoved Total bytes removed in the commit
- * @param numRowsAdded Number of rows added in the commit (from numLogicalRecords)
- * @param numRowsRemoved Number of rows removed in the commit (from numLogicalRecords)
+ * Envelope that matches the server's @JsonSubTypes WRAPPER_OBJECT format.
+ * Serializes as: { "commit_report": { ... } }
  */
-case class POMetrics(
-    numFilesAdded: Long,
-    numBytesAdded: Long,
-    numFilesRemoved: Long,
-    numBytesRemoved: Long,
-    numRowsAdded: Long,
-    numRowsRemoved: Long)
+case class CommitReportEnvelope(
+    @JsonProperty("commit_report") commitReport: CommitReport)
 
 /**
- * HTTP client for sending commit metrics to the PO endpoint.
+ * Commit-level file and row metrics.
  *
- * This client is responsible for:
- * - Building and sending HTTP POST requests to the UC PO metrics endpoint
- * - Handling authentication via bearer token
- * - Managing timeouts and error handling
- * - Best-effort delivery (failures should not block commits)
+ * All fields are optional - the server validates they are non-negative if present.
+ * num_clustered_bytes_removed is intentionally omitted: RemoveFile carries no
+ * clusteringProvider, so we cannot compute it from the commit log alone.
+ *
+ * commit_version is conveyed via file_size_histogram.commit_version and is
+ * required by the server to validate the payload is not stale.
+ */
+case class CommitReport(
+    @JsonProperty("num_files_added") numFilesAdded: Option[Long] = None,
+    @JsonProperty("num_files_removed") numFilesRemoved: Option[Long] = None,
+    @JsonProperty("num_bytes_added") numBytesAdded: Option[Long] = None,
+    @JsonProperty("num_bytes_removed") numBytesRemoved: Option[Long] = None,
+    @JsonProperty("num_clustered_bytes_added") numClusteredBytesAdded: Option[Long] = None,
+    // num_clustered_bytes_removed omitted: not derivable from RemoveFile (no clusteringProvider)
+    @JsonProperty("num_rows_inserted") numRowsInserted: Option[Long] = None,
+    @JsonProperty("num_rows_removed") numRowsRemoved: Option[Long] = None,
+    @JsonProperty("num_rows_updated") numRowsUpdated: Option[Long] = None,
+    @JsonProperty("file_size_histogram") fileSizeHistogram: Option[FileSizeHistogramPayload] = None)
+
+/**
+ * File size distribution for the added files in this commit.
+ * commit_version is also used by the server to validate payload freshness.
+ */
+case class FileSizeHistogramPayload(
+    @JsonProperty("sorted_bin_boundaries") sortedBinBoundaries: Seq[Long],
+    @JsonProperty("file_counts") fileCounts: Seq[Long],
+    @JsonProperty("total_bytes") totalBytes: Seq[Long],
+    @JsonProperty("commit_version") commitVersion: Option[Long] = None)
+
+/**
+ * HTTP client for sending commit metrics to the UC PO endpoint.
+ *
+ * Endpoint: POST /api/2.1/unity-catalog/delta/preview/metrics
+ *
+ * The server (ReportDeltaMetricsHandler) will:
+ *  1. Look up the table via getTableById to fetch PO-enable status and latest version
+ *  2. Validate commit_version is within validCommitVersionWindow of the latest version
+ *  3. Validate all numeric fields are non-negative
+ *  4. Forward the metrics to PO via PredictiveOptimizationClient.pushExternalDeltaCommitMetrics
  */
 object POMetricsClient {
 
   /**
    * Sends commit metrics to the PO endpoint synchronously.
    *
-   * @param spark The SparkSession (used to read configuration)
-   * @param payload The metrics payload to send
-   * @throws Exception if the HTTP request fails (caller should handle gracefully)
+   * @param spark   The SparkSession (used to read configuration)
+   * @param request The fully-constructed request payload
+   * @throws Exception if the HTTP request fails (caller should catch and log)
    */
-  def sendMetrics(spark: SparkSession, payload: POMetricsPayload): Unit = {
+  def sendMetrics(spark: SparkSession, request: ReportDeltaMetricsRequest): Unit = {
     val endpointUrl = getEndpointUrl(spark)
     val authToken = getAuthToken(spark)
     val timeoutMs = getTimeoutMs(spark)
 
-    // Build HTTP client with timeout configuration
     val requestConfig = RequestConfig.custom()
       .setConnectTimeout(timeoutMs.toInt)
       .setSocketTimeout(timeoutMs.toInt)
@@ -100,24 +113,16 @@ object POMetricsClient {
       .build()
 
     try {
-      // Create POST request
       val httpPost = new HttpPost(endpointUrl)
-
-      // Set headers
       httpPost.setHeader(HttpHeaders.CONTENT_TYPE, ContentType.APPLICATION_JSON.getMimeType)
       httpPost.setHeader(HttpHeaders.AUTHORIZATION, s"Bearer $authToken")
 
-      // Serialize payload to JSON
-      val jsonPayload = JsonUtils.toJson(payload)
+      val jsonPayload = JsonUtils.toJson(request)
       httpPost.setEntity(new StringEntity(jsonPayload, ContentType.APPLICATION_JSON))
 
-      // Execute request
       val response = httpClient.execute(httpPost)
-
       try {
         val statusCode = response.getStatusLine.getStatusCode
-
-        // Check for successful response (2xx)
         if (statusCode < 200 || statusCode >= 300) {
           val responseBody = if (response.getEntity != null) {
             EntityUtils.toString(response.getEntity)
@@ -135,15 +140,8 @@ object POMetricsClient {
     }
   }
 
-  /**
-   * Gets the PO metrics endpoint URL from Spark configuration.
-   *
-   * @param spark The SparkSession
-   * @return The endpoint URL
-   * @throws IllegalArgumentException if the endpoint URL is not configured
-   */
   private def getEndpointUrl(spark: SparkSession): String = {
-    spark.conf.get(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key) match {
+    spark.conf.getOption(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key) match {
       case Some(url) if url.nonEmpty => url
       case _ =>
         val key = DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key
@@ -152,16 +150,8 @@ object POMetricsClient {
     }
   }
 
-  /**
-   * Gets the authentication token from Spark configuration or environment variable.
-   *
-   * @param spark The SparkSession
-   * @return The authentication token
-   * @throws IllegalArgumentException if no token is available
-   */
   private def getAuthToken(spark: SparkSession): String = {
-    // Try Spark config first, then fall back to environment variable
-    spark.conf.get(DeltaSQLConf.DELTA_PO_METRICS_AUTH_TOKEN.key)
+    spark.conf.getOption(DeltaSQLConf.DELTA_PO_METRICS_AUTH_TOKEN.key)
       .orElse(Option(System.getenv("DATABRICKS_TOKEN"))) match {
       case Some(token) if token.nonEmpty => token
       case _ =>
@@ -172,12 +162,6 @@ object POMetricsClient {
     }
   }
 
-  /**
-   * Gets the HTTP request timeout from Spark configuration.
-   *
-   * @param spark The SparkSession
-   * @return The timeout in milliseconds
-   */
   private def getTimeoutMs(spark: SparkSession): Long = {
     spark.conf.get(DeltaSQLConf.DELTA_PO_METRICS_TIMEOUT_MS)
   }

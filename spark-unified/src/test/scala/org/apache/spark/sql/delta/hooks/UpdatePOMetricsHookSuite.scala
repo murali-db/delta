@@ -18,12 +18,9 @@ package org.apache.spark.sql.delta.hooks
 
 import java.io.{BufferedReader, InputStreamReader, PrintWriter}
 import java.net.{ServerSocket, Socket}
-import java.sql.Timestamp
 import java.util.concurrent.atomic.AtomicInteger
 
-import scala.collection.mutable.ArrayBuffer
-
-import org.apache.spark.sql.delta.{DeltaLog, Snapshot}
+import org.apache.spark.sql.delta.{CommittedTransaction, DeltaLog}
 import org.apache.spark.sql.delta.actions.{Action, AddFile, CommitInfo, RemoveFile}
 import org.apache.spark.sql.delta.sources.DeltaSQLConf
 import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
@@ -32,254 +29,328 @@ import org.apache.spark.sql.delta.util.JsonUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType}
 import org.apache.spark.sql.test.SharedSparkSession
+import org.apache.spark.sql.types.StructType
 
 /**
  * Test suite for UpdatePOMetricsHook functionality.
  *
  * Tests cover:
- * - Metrics extraction from AddFile and RemoveFile actions
- * - Row-level metrics extraction from numLogicalRecords
+ * - buildRequest: file and row metric extraction without Delta infrastructure
+ * - JSON payload structure matching the server contract (snake_case, nested)
  * - Hook enablement via configuration
- * - UC table filtering
- * - JSON payload validation
  * - Error handling (commits succeed even when HTTP fails)
+ * - Basic mock server integration
+ * - Smoke test: run() fires HTTP POST with correct payload for UC-managed table
  */
 class UpdatePOMetricsHookSuite extends QueryTest
   with SharedSparkSession
   with DeltaSQLCommandTest {
-
-  import testImplicits._
 
   override protected def sparkConf: SparkConf = {
     super.sparkConf
       .set("spark.databricks.delta.properties.defaults.enableChangeDataFeed", "false")
   }
 
-  test("extractMetrics: mixed add and remove files") {
+  // ---------------------------------------------------------------------------
+  // buildRequest tests - no reflection, no Delta infrastructure
+  // ---------------------------------------------------------------------------
+
+  test("buildRequest: file metrics from synthetic AddFile/RemoveFile actions") {
     val hook = UpdatePOMetricsHook(None)
 
-    // Create test actions with AddFile and RemoveFile
-    val addFile1 = AddFile(
-      path = "file1.parquet",
-      partitionValues = Map.empty,
-      size = 1000L,
-      modificationTime = System.currentTimeMillis(),
-      dataChange = true,
-      stats = """{"numRecords": 100}"""
-    )
+    val plain1 = AddFile("plain1.parquet", Map.empty, 1024L,
+      System.currentTimeMillis(), dataChange = true)
+    val plain2 = AddFile("plain2.parquet", Map.empty, 2048L,
+      System.currentTimeMillis(), dataChange = true)
+    val clustered = AddFile("clustered.parquet", Map.empty, 4096L,
+      System.currentTimeMillis(), dataChange = true,
+      clusteringProvider = Some("liquid"))
+    val removed = RemoveFile("old.parquet", Some(System.currentTimeMillis()),
+      dataChange = true, size = Some(512L))
 
-    val addFile2 = AddFile(
-      path = "file2.parquet",
-      partitionValues = Map.empty,
-      size = 2000L,
-      modificationTime = System.currentTimeMillis(),
-      dataChange = true,
-      stats = """{"numRecords": 200}"""
-    )
+    val actions: Seq[Action] = Seq(plain1, plain2, clustered, removed)
+    val request = hook.buildRequest("tbl-123", actions, committedVersion = 7L)
+    val report = request.report.commitReport
 
-    val removeFile1 = RemoveFile(
-      path = "file_old.parquet",
-      deletionTimestamp = Some(System.currentTimeMillis()),
-      dataChange = true,
-      size = Some(500L),
-      stats = """{"numRecords": 50}"""
-    )
+    assert(request.tableId == "tbl-123")
+    assert(report.numFilesAdded == Some(3L), "3 AddFiles")
+    assert(report.numFilesRemoved == Some(1L), "1 RemoveFile")
+    assert(report.numBytesAdded == Some(1024L + 2048L + 4096L), "sum of add sizes")
+    assert(report.numBytesRemoved == Some(512L), "sum of remove sizes")
+    assert(report.numClusteredBytesAdded == Some(4096L), "only the clustered file")
 
-    val actions = Seq[Action](addFile1, addFile2, removeFile1)
-
-    // Use reflection to access private extractMetrics method
-    val extractMetricsMethod = hook.getClass.getDeclaredMethod("extractMetrics", classOf[Seq[Action]])
-    extractMetricsMethod.setAccessible(true)
-    val metrics = extractMetricsMethod.invoke(hook, actions).asInstanceOf[POMetrics]
-
-    // Verify file-level metrics
-    assert(metrics.numFilesAdded == 2, "Expected 2 files added")
-    assert(metrics.numBytesAdded == 3000L, "Expected 3000 bytes added")
-    assert(metrics.numFilesRemoved == 1, "Expected 1 file removed")
-    assert(metrics.numBytesRemoved == 500L, "Expected 500 bytes removed")
-
-    // Verify row-level metrics
-    assert(metrics.numRowsAdded == 300L, "Expected 300 rows added (100 + 200)")
-    assert(metrics.numRowsRemoved == 50L, "Expected 50 rows removed")
+    val hist = report.fileSizeHistogram.getOrElse(fail("histogram must be present"))
+    assert(hist.commitVersion == Some(7L), "commit_version must be set")
+    assert(hist.sortedBinBoundaries.head == 0L, "bins must start at 0")
+    assert(hist.fileCounts.sum == 3L, "histogram covers all AddFiles")
+    assert(hist.totalBytes.sum == 1024L + 2048L + 4096L, "histogram totalBytes")
   }
 
-  test("extractMetrics: row metrics from numLogicalRecords") {
+  test("buildRequest: row metrics prefer operationMetrics over file stats") {
     val hook = UpdatePOMetricsHook(None)
 
-    // Create AddFile with stats containing numRecords
-    val addFile = AddFile(
-      path = "file_with_stats.parquet",
-      partitionValues = Map.empty,
-      size = 5000L,
-      modificationTime = System.currentTimeMillis(),
-      dataChange = true,
-      stats = """{"numRecords": 1000, "minValues": {}, "maxValues": {}}"""
-    )
+    // Sub-case 1: operationMetrics present - must win over file-level numLogicalRecords
+    val addFileWithStats = AddFile("f.parquet", Map.empty, 1000L,
+      System.currentTimeMillis(), dataChange = true,
+      stats = """{"numRecords": 999}""")
+    val commitInfoWithMetrics = CommitInfo(
+      version = Some(0L),
+      inCommitTimestamp = None,
+      timestamp = new java.sql.Timestamp(System.currentTimeMillis()),
+      userId = None, userName = None,
+      operation = "WRITE",
+      operationParameters = Map.empty,
+      job = None, notebook = None, clusterId = None,
+      readVersion = None, isolationLevel = None,
+      isBlindAppend = Some(true),
+      operationMetrics = Some(Map("numOutputRows" -> "100")),
+      userMetadata = None, tags = None, engineInfo = None, txnId = None)
 
-    val actions = Seq[Action](addFile)
+    val req1 = hook.buildRequest("t1", Seq(commitInfoWithMetrics, addFileWithStats), 0L)
+    assert(req1.report.commitReport.numRowsInserted == Some(100L),
+      "operationMetrics wins over file stats")
 
-    // Use reflection to access private extractMetrics method
-    val extractMetricsMethod = hook.getClass.getDeclaredMethod("extractMetrics", classOf[Seq[Action]])
-    extractMetricsMethod.setAccessible(true)
-    val metrics = extractMetricsMethod.invoke(hook, actions).asInstanceOf[POMetrics]
+    // Sub-case 2: no operationMetrics - falls back to numLogicalRecords from file stats
+    val commitInfoNoMetrics = CommitInfo(
+      version = Some(1L),
+      inCommitTimestamp = None,
+      timestamp = new java.sql.Timestamp(System.currentTimeMillis()),
+      userId = None, userName = None,
+      operation = "WRITE",
+      operationParameters = Map.empty,
+      job = None, notebook = None, clusterId = None,
+      readVersion = None, isolationLevel = None,
+      isBlindAppend = Some(true),
+      operationMetrics = None,
+      userMetadata = None, tags = None, engineInfo = None, txnId = None)
 
-    assert(metrics.numRowsAdded == 1000L, "Expected 1000 rows from numRecords in stats")
+    val req2 = hook.buildRequest("t2", Seq(commitInfoNoMetrics, addFileWithStats), 1L)
+    assert(req2.report.commitReport.numRowsInserted == Some(999L),
+      "fallback to numLogicalRecords from file stats")
+
+    // Sub-case 3: no CommitInfo at all - falls back to numLogicalRecords
+    val req3 = hook.buildRequest("t3", Seq(addFileWithStats), 2L)
+    assert(req3.report.commitReport.numRowsInserted == Some(999L),
+      "fallback works with no CommitInfo in actions")
   }
 
-  test("extractMetrics: handles missing stats gracefully") {
-    val hook = UpdatePOMetricsHook(None)
+  // ---------------------------------------------------------------------------
+  // JSON payload structure tests - validates server contract
+  // ---------------------------------------------------------------------------
 
-    // Create AddFile without stats
-    val addFileNoStats = AddFile(
-      path = "file_no_stats.parquet",
-      partitionValues = Map.empty,
-      size = 1000L,
-      modificationTime = System.currentTimeMillis(),
-      dataChange = true,
-      stats = null
+  test("JSON payload validation - matches server contract (snake_case, nested)") {
+    val request = ReportDeltaMetricsRequest(
+      tableId = "test-table-id-123",
+      report = CommitReportEnvelope(CommitReport(
+        numFilesAdded = Some(10L),
+        numFilesRemoved = Some(2L),
+        numBytesAdded = Some(10000L),
+        numBytesRemoved = Some(2000L),
+        numClusteredBytesAdded = Some(5000L),
+        numRowsInserted = Some(1000L),
+        numRowsRemoved = Some(200L),
+        numRowsUpdated = Some(50L),
+        fileSizeHistogram = Some(FileSizeHistogramPayload(
+          sortedBinBoundaries = Seq(0L, 1024L),
+          fileCounts = Seq(5L, 5L),
+          totalBytes = Seq(2000L, 8000L),
+          commitVersion = Some(42L)
+        ))
+      ))
     )
 
-    val actions = Seq[Action](addFileNoStats)
+    val json = JsonUtils.toJson(request)
 
-    val extractMetricsMethod = hook.getClass.getDeclaredMethod("extractMetrics", classOf[Seq[Action]])
-    extractMetricsMethod.setAccessible(true)
-    val metrics = extractMetricsMethod.invoke(hook, actions).asInstanceOf[POMetrics]
+    // Server expects snake_case field names
+    assert(json.contains(""""table_id":"test-table-id-123""""),
+      "table_id must be snake_case")
+    assert(json.contains(""""commit_report""""),
+      "must have nested commit_report key")
+    assert(json.contains(""""num_files_added":10"""),
+      "num_files_added must be snake_case")
+    assert(json.contains(""""num_rows_inserted":1000"""),
+      "must use num_rows_inserted (not num_rows_added)")
+    assert(json.contains(""""num_clustered_bytes_added":5000"""),
+      "clustered bytes must be present")
+    assert(json.contains(""""commit_version":42"""),
+      "commit_version required for server staleness check")
 
-    // File metrics should still work
-    assert(metrics.numFilesAdded == 1, "Expected 1 file added")
-    assert(metrics.numBytesAdded == 1000L, "Expected 1000 bytes added")
-
-    // Row metrics should be 0 when stats are missing
-    assert(metrics.numRowsAdded == 0L, "Expected 0 rows when stats are missing")
+    // Must NOT have camelCase keys
+    assert(!json.contains(""""tableId""""), "no camelCase tableId")
+    assert(!json.contains(""""numFilesAdded""""), "no camelCase numFilesAdded")
+    assert(!json.contains(""""numRowsAdded""""), "no old numRowsAdded field")
   }
+
+  test("JSON payload: optional fields are omitted when None") {
+    val request = ReportDeltaMetricsRequest(
+      tableId = "some-id",
+      report = CommitReportEnvelope(CommitReport(
+        numFilesAdded = Some(1L)
+        // all other fields None
+      ))
+    )
+
+    val json = JsonUtils.toJson(request)
+    assert(!json.contains(""""num_rows_inserted""""),
+      "None fields should be absent from JSON")
+    assert(!json.contains(""""num_rows_updated""""),
+      "None fields should be absent from JSON")
+    assert(!json.contains(""""num_clustered_bytes_removed""""),
+      "clustered_bytes_removed must never appear")
+  }
+
+  // ---------------------------------------------------------------------------
+  // Hook lifecycle tests
+  // ---------------------------------------------------------------------------
 
   test("hook disabled by config - skips execution") {
     withTempDir { dir =>
       val tablePath = dir.getCanonicalPath
 
-      // Ensure hook is disabled
       spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_ENABLED.key, "false")
 
-      // Create a simple Delta table
+      // Create and append - if hook ran it would fail (no endpoint configured)
       spark.range(10).write.format("delta").save(tablePath)
-
-      // Append more data
       spark.range(10, 20).write.format("delta").mode("append").save(tablePath)
 
-      // Hook should not have been executed (no exception even without endpoint config)
-      // If hook ran, it would fail due to missing endpoint configuration
       val deltaLog = DeltaLog.forTable(spark, tablePath)
       assert(deltaLog.snapshot.version == 1, "Expected 2 commits")
     }
   }
 
-  test("JSON payload validation") {
-    val payload = POMetricsPayload(
-      tableId = "test-table-id-123",
-      tableName = "catalog.schema.test_table",
-      version = 42L,
-      timestamp = System.currentTimeMillis(),
-      operation = "WRITE",
-      metrics = POMetrics(
-        numFilesAdded = 10L,
-        numBytesAdded = 10000L,
-        numFilesRemoved = 2L,
-        numBytesRemoved = 2000L,
-        numRowsAdded = 1000L,
-        numRowsRemoved = 200L
-      ),
-      partitionInfo = Some(Map(
-        "year" -> Set("2024", "2025"),
-        "month" -> Set("01", "02")
-      ))
-    )
-
-    // Serialize to JSON
-    val json = JsonUtils.toJson(payload)
-
-    // Verify JSON contains expected fields
-    assert(json.contains("\"tableId\":\"test-table-id-123\""), "JSON should contain tableId")
-    assert(json.contains("\"tableName\":\"catalog.schema.test_table\""), "JSON should contain tableName")
-    assert(json.contains("\"version\":42"), "JSON should contain version")
-    assert(json.contains("\"operation\":\"WRITE\""), "JSON should contain operation")
-    assert(json.contains("\"numFilesAdded\":10"), "JSON should contain numFilesAdded")
-    assert(json.contains("\"numRowsAdded\":1000"), "JSON should contain numRowsAdded")
-    assert(json.contains("\"partitionInfo\""), "JSON should contain partitionInfo")
-
-    // Verify we can deserialize it back
-    val deserialized = JsonUtils.fromJson[POMetricsPayload](json)
-    assert(deserialized.tableId == payload.tableId)
-    assert(deserialized.metrics.numFilesAdded == payload.metrics.numFilesAdded)
-    assert(deserialized.metrics.numRowsAdded == payload.metrics.numRowsAdded)
-  }
-
-  test("error handling - commit succeeds when HTTP fails") {
-    val mockServer = new SimpleMockServer(0) // Use random available port
+  test("POMetricsClient: throws RuntimeException on HTTP 5xx response") {
+    val mockServer = new SimpleMockServer(0)
     try {
-      mockServer.setResponseCode(500) // Return error
+      mockServer.setResponseCode(500)
       mockServer.start()
 
-      withTempDir { dir =>
-        val tablePath = dir.getCanonicalPath
+      spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key,
+        s"http://localhost:${mockServer.getPort()}/metrics")
+      spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_AUTH_TOKEN.key, "test-token")
+      spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_TIMEOUT_MS.key, "1000")
 
-        // Enable hook and configure endpoint
-        spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_ENABLED.key, "true")
-        spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key,
-          s"http://localhost:${mockServer.getPort()}/metrics")
-        spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_AUTH_TOKEN.key, "test-token")
-        spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_TIMEOUT_MS.key, "1000")
-
-        // Create table - should succeed even though HTTP fails
-        spark.range(10).write.format("delta").save(tablePath)
-
-        // Verify commit succeeded
-        val deltaLog = DeltaLog.forTable(spark, tablePath)
-        assert(deltaLog.snapshot.version == 0, "Commit should succeed despite HTTP error")
-
-        // Verify HTTP request was attempted
-        assert(mockServer.getRequestCount() > 0, "HTTP request should have been sent")
+      val request = ReportDeltaMetricsRequest(
+        tableId = "test-id",
+        report = CommitReportEnvelope(CommitReport(numFilesAdded = Some(1L)))
+      )
+      // Client should throw on 5xx; the hook catches and logs this as a warning
+      intercept[RuntimeException] {
+        POMetricsClient.sendMetrics(spark, request)
       }
+      assert(mockServer.getRequestCount() == 1, "Expected 1 HTTP request even on error")
     } finally {
       mockServer.stop()
     }
   }
 
-  test("basic integration with mock server - successful request") {
+  test("POMetricsClient: sends correct Authorization header and JSON body") {
     val mockServer = new SimpleMockServer(0)
     try {
-      mockServer.setResponseCode(200) // Return success
+      mockServer.setResponseCode(200)
+      mockServer.start()
+
+      spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key,
+        s"http://localhost:${mockServer.getPort()}/metrics")
+      spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_AUTH_TOKEN.key, "test-token-123")
+      spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_TIMEOUT_MS.key, "5000")
+
+      val request = ReportDeltaMetricsRequest(
+        tableId = "abc-123",
+        report = CommitReportEnvelope(CommitReport(
+          numFilesAdded = Some(5L),
+          numBytesAdded = Some(5000L),
+          numRowsInserted = Some(100L)
+        ))
+      )
+      POMetricsClient.sendMetrics(spark, request)
+
+      assert(mockServer.getRequestCount() == 1, "Expected 1 HTTP request")
+
+      val authHeader = mockServer.getLastHeaders().get("Authorization")
+      assert(authHeader.isDefined, "Authorization header should be present")
+      assert(authHeader.get == "Bearer test-token-123", "Auth token must match")
+
+      val body = mockServer.getLastRequestBody()
+      assert(body.contains(""""table_id":"abc-123""""), "body must contain table_id")
+      assert(body.contains(""""num_files_added":5"""), "body must contain num_files_added")
+      assert(body.contains(""""num_rows_inserted":100"""), "body must contain num_rows_inserted")
+    } finally {
+      mockServer.stop()
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Smoke test - exercises run() end-to-end with a real DeltaLog + mock server
+  // ---------------------------------------------------------------------------
+
+  test("run(): fires HTTP POST with correct payload for UC-managed table") {
+    val mockServer = new SimpleMockServer(0)
+    try {
+      mockServer.setResponseCode(200)
       mockServer.start()
 
       withTempDir { dir =>
-        val tablePath = dir.getCanonicalPath
+        // Real DeltaLog so tableId is a valid UUID
+        spark.range(10).write.format("delta").save(dir.getCanonicalPath)
+        val deltaLog = DeltaLog.forTable(spark, dir.getCanonicalPath)
+        val snapshot = deltaLog.snapshot
 
-        // Enable hook and configure endpoint
         spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_ENABLED.key, "true")
         spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key,
           s"http://localhost:${mockServer.getPort()}/metrics")
-        spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_AUTH_TOKEN.key, "test-token-123")
-        spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_TIMEOUT_MS.key, "5000")
+        spark.conf.set(DeltaSQLConf.DELTA_PO_METRICS_AUTH_TOKEN.key, "smoke-token")
 
-        // Create Delta table
-        spark.range(100).write.format("delta").save(tablePath)
+        // catalog identifier causes isUCManagedTable to return true
+        val catalogTable = CatalogTable(
+          identifier = TableIdentifier("t", Some("default"), Some("spark_catalog")),
+          tableType = CatalogTableType.MANAGED,
+          storage = CatalogStorageFormat.empty,
+          schema = new StructType()
+        )
 
-        // Verify commit succeeded
-        val deltaLog = DeltaLog.forTable(spark, tablePath)
-        assert(deltaLog.snapshot.version == 0)
+        val addFile = AddFile("f1.parquet", Map.empty, 4096L, 0L, dataChange = true,
+          stats = """{"numRecords":50}""")
+        val commitInfo = CommitInfo(
+          version = Some(0L),
+          inCommitTimestamp = None,
+          timestamp = new java.sql.Timestamp(System.currentTimeMillis()),
+          userId = None, userName = None,
+          operation = "WRITE",
+          operationParameters = Map.empty,
+          job = None, notebook = None, clusterId = None,
+          readVersion = None, isolationLevel = None,
+          isBlindAppend = Some(true),
+          operationMetrics = Some(Map("numOutputRows" -> "50")),
+          userMetadata = None, tags = None, engineInfo = None, txnId = None)
 
-        // Verify HTTP request was sent
-        assert(mockServer.getRequestCount() == 1, "Expected 1 HTTP request")
+        val txn = CommittedTransaction(
+          txnId = "smoke-txn",
+          deltaLog = deltaLog,
+          catalogTable = Some(catalogTable),
+          readSnapshot = snapshot,
+          committedVersion = 0L,
+          committedActions = Seq(commitInfo, addFile),
+          postCommitSnapshot = snapshot,
+          postCommitHooks = Seq.empty,
+          txnExecutionTimeMs = 0L,
+          needsCheckpoint = false,
+          partitionsAddedToOpt = None,
+          isBlindAppend = true
+        )
 
-        // Verify request details
-        val lastRequest = mockServer.getLastRequestBody()
-        assert(lastRequest.nonEmpty, "Request body should not be empty")
-        assert(lastRequest.contains("\"operation\""), "Request should contain operation field")
+        UpdatePOMetricsHook(Some(catalogTable)).run(spark, txn)
 
-        // Verify auth header was sent
-        val authHeader = mockServer.getLastHeaders().get("Authorization")
-        assert(authHeader.isDefined, "Authorization header should be present")
-        assert(authHeader.get == "Bearer test-token-123", "Auth token should match")
+        assert(mockServer.getRequestCount() == 1, "Expected exactly 1 HTTP POST")
+        val body = mockServer.getLastRequestBody()
+        assert(body.contains(s""""table_id":"${deltaLog.tableId}""""),
+          "payload must contain the table's UUID")
+        assert(body.contains(""""num_files_added":1"""), "1 AddFile committed")
+        assert(body.contains(""""num_rows_inserted":50"""),
+          "numOutputRows from operationMetrics")
+        assert(body.contains(""""commit_version":0"""),
+          "commit_version required for server staleness check")
       }
     } finally {
       mockServer.stop()
@@ -290,8 +361,8 @@ class UpdatePOMetricsHookSuite extends QueryTest
 /**
  * Simple mock HTTP server for testing.
  *
- * This is a basic single-threaded HTTP server that accepts one connection at a time
- * and returns a configurable status code. It captures request details for validation.
+ * Accepts one connection at a time, returns a configurable status code,
+ * and captures request headers and body for assertion.
  */
 class SimpleMockServer(port: Int) {
   private var serverSocket: ServerSocket = _
@@ -303,9 +374,7 @@ class SimpleMockServer(port: Int) {
   private var lastHeaders = Map[String, String]()
   private var actualPort = port
 
-  def setResponseCode(code: Int): Unit = {
-    responseCode = code
-  }
+  def setResponseCode(code: Int): Unit = { responseCode = code }
 
   def getPort(): Int = actualPort
 
@@ -327,10 +396,8 @@ class SimpleMockServer(port: Int) {
             val clientSocket = serverSocket.accept()
             handleRequest(clientSocket)
           } catch {
-            case _: java.net.SocketException if !running =>
-              // Expected when stopping the server
-            case e: Exception =>
-              e.printStackTrace()
+            case _: java.net.SocketException if !running => // expected on stop()
+            case e: Exception => e.printStackTrace()
           }
         }
       }
@@ -338,8 +405,7 @@ class SimpleMockServer(port: Int) {
     serverThread.setDaemon(true)
     serverThread.start()
 
-    // Give server a moment to start
-    Thread.sleep(100)
+    Thread.sleep(100) // allow server to bind
   }
 
   private def handleRequest(clientSocket: Socket): Unit = {
@@ -347,42 +413,30 @@ class SimpleMockServer(port: Int) {
       val in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream))
       val out = new PrintWriter(clientSocket.getOutputStream, true)
 
-      // Read request line
-      val requestLine = in.readLine()
-      if (requestLine == null) return
+      in.readLine() // request line
 
-      // Read headers
       val headers = scala.collection.mutable.Map[String, String]()
-      var line = in.readLine()
       var contentLength = 0
-
+      var line = in.readLine()
       while (line != null && line.nonEmpty) {
         val parts = line.split(":", 2)
         if (parts.length == 2) {
           val key = parts(0).trim
           val value = parts(1).trim
           headers(key) = value
-
-          if (key.equalsIgnoreCase("Content-Length")) {
-            contentLength = value.toInt
-          }
+          if (key.equalsIgnoreCase("Content-Length")) contentLength = value.toInt
         }
         line = in.readLine()
       }
 
-      // Read body
       val body = new Array[Char](contentLength)
-      if (contentLength > 0) {
-        in.read(body, 0, contentLength)
-      }
+      if (contentLength > 0) in.read(body, 0, contentLength)
 
-      // Store request details
       requestCount.incrementAndGet()
       lastRequestBody = new String(body)
       lastHeaders = headers.toMap
 
-      // Send response
-      out.println(s"HTTP/1.1 $responseCode ${getStatusMessage(responseCode)}")
+      out.println(s"HTTP/1.1 $responseCode ${statusMessage(responseCode)}")
       out.println("Content-Type: application/json")
       out.println("Content-Length: 2")
       out.println()
@@ -391,12 +445,11 @@ class SimpleMockServer(port: Int) {
 
       clientSocket.close()
     } catch {
-      case e: Exception =>
-        e.printStackTrace()
+      case e: Exception => e.printStackTrace()
     }
   }
 
-  private def getStatusMessage(code: Int): String = code match {
+  private def statusMessage(code: Int): String = code match {
     case 200 => "OK"
     case 400 => "Bad Request"
     case 500 => "Internal Server Error"
@@ -405,9 +458,7 @@ class SimpleMockServer(port: Int) {
 
   def stop(): Unit = {
     running = false
-    if (serverSocket != null && !serverSocket.isClosed) {
-      serverSocket.close()
-    }
+    if (serverSocket != null && !serverSocket.isClosed) serverSocket.close()
     if (serverThread != null) {
       serverThread.interrupt()
       serverThread.join(1000)

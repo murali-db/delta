@@ -2,800 +2,478 @@
 
 ## Overview
 
-This document describes the implementation of Phase 1 of PO (Predictive Optimization) integration for externally-accessed Unity Catalog Managed Delta tables. This feature adds a post-commit hook that sends commit statistics to a UC endpoint for PO analysis.
+Phase 1 of PO (Predictive Optimization) integration for externally-accessed Unity Catalog Managed
+Delta tables. Adds a post-commit hook that sends commit statistics synchronously to a UC endpoint
+so the PO backend has visibility into external (non-DBR) writes.
 
-**Design Document**: https://docs.google.com/document/d/1pbMbCBIvU7X8cFdb14HrJWhIfS3vzHcvsXBVv0GXp_0/edit?tab=t.0#heading=h.ch26vislrfey
-
-**Implementation Date**: January 21, 2026
+**Design Doc**: https://docs.google.com/document/d/1pbMbCBIvU7X8cFdb14HrJWhIfS3vzHcvsXBVv0GXp_0/edit?tab=t.0#heading=h.ch26vislrfey
+**Server-side PR**: https://github.com/databricks-eng/universe/pull/1387169 (ReportDeltaMetricsHandler)
 
 ---
 
 ## Problem Statement
 
-- PO currently has no visibility into UC Managed Delta tables accessed by external engines (non-DBR)
-- External reads and writes don't send metrics to PO, creating inconsistent behavior with Managed Iceberg tables
-- Goal: Achieve parity with Managed Iceberg table support for UC Delta tables
+PO has no visibility into UC Managed Delta tables accessed by external engines (non-DBR). External
+writes don't send metrics to PO, causing inconsistent optimization behavior compared to Managed
+Iceberg tables. Goal: achieve parity with Managed Iceberg table support.
 
 ---
 
-## Solution Architecture
+## Architecture
 
 ```
-Delta Commit → OptimisticTransaction.runPostCommitHooks()
-    → UpdatePOMetricsHook.run()
-        → Extract metrics from CommittedTransaction
-        → Build JSON payload
-        → POMetricsClient.sendMetrics() [Synchronous HTTP POST]
-            → UC Endpoint: POST /api/2.0/unity-catalog/delta/preview/metrics
-                → Table Service → Kafka → PO Backend
+Delta Commit
+  → OptimisticTransaction.runPostCommitHooks()
+      → UpdatePOMetricsHook.run()
+          → Extract metrics from CommittedTransaction (AddFile/RemoveFile/CommitInfo)
+          → Build JSON payload matching server contract
+          → POMetricsClient.sendMetrics() [Synchronous HTTP POST]
+              → POST /api/2.1/unity-catalog/delta/preview/metrics
+                  → ReportDeltaMetricsHandler (server)
+                      → Validates commit_version (staleness check)
+                      → PredictiveOptimizationClient.pushExternalDeltaCommitMetrics
+                          → Kafka → PO Backend
 ```
 
 ---
 
-## Implementation Details
+## Files Created / Modified
 
-### Files Created/Modified
+### New Files
 
-#### 1. Configuration (`DeltaSQLConf.scala`)
+| File | Purpose |
+|------|---------|
+| `spark/src/main/scala/.../hooks/UpdatePOMetricsHook.scala` | Post-commit hook implementation |
+| `spark/src/main/scala/.../hooks/POMetricsClient.scala` | Data classes + HTTP client |
+| `spark-unified/src/test/scala/.../hooks/UpdatePOMetricsHookSuite.scala` | Test suite |
 
-**Location**: `delta/spark/src/main/scala/org/apache/spark/sql/delta/sources/DeltaSQLConf.scala`
+### Modified Files
 
-**Changes**: Added 4 new configuration entries (lines 107-136)
-
-```scala
-val DELTA_PO_METRICS_ENABLED =
-  buildConf("po.metrics.enabled")
-    .internal()
-    .doc("When true, commit metrics are sent to the PO endpoint for UC-managed tables.")
-    .booleanConf
-    .createWithDefault(false)
-
-val DELTA_PO_METRICS_ENDPOINT =
-  buildConf("po.metrics.endpoint")
-    .internal()
-    .doc("Base URL for the Unity Catalog PO metrics endpoint.")
-    .stringConf
-    .createOptional
-
-val DELTA_PO_METRICS_AUTH_TOKEN =
-  buildConf("po.metrics.authToken")
-    .internal()
-    .doc("Bearer token for authenticating to the PO metrics endpoint. " +
-      "Falls back to DATABRICKS_TOKEN env var if not set.")
-    .stringConf
-    .createOptional
-
-val DELTA_PO_METRICS_TIMEOUT_MS =
-  buildConf("po.metrics.timeoutMs")
-    .internal()
-    .doc("HTTP request timeout for PO metrics endpoint calls (milliseconds).")
-    .longConf
-    .createWithDefault(5000L)
-```
-
-**Configuration Keys**:
-- `spark.databricks.delta.po.metrics.enabled` (default: `false`)
-- `spark.databricks.delta.po.metrics.endpoint` (no default)
-- `spark.databricks.delta.po.metrics.authToken` (no default, falls back to `DATABRICKS_TOKEN` env var)
-- `spark.databricks.delta.po.metrics.timeoutMs` (default: `5000`)
+| File | Change |
+|------|--------|
+| `spark/src/main/scala/.../sources/DeltaSQLConf.scala` | 4 new config entries |
+| `spark/src/main/scala/.../OptimisticTransaction.scala` | Hook registration |
 
 ---
 
-#### 2. HTTP Client (`POMetricsClient.scala`)
+## Server Contract
 
-**Location**: `delta/spark/src/main/scala/org/apache/spark/sql/delta/hooks/POMetricsClient.scala`
+Discovered from universe PR #1387169. The server-side handler is `ReportDeltaMetricsHandler`.
 
-**Purpose**: Handles HTTP communication with the PO metrics endpoint
+### Endpoint
 
-**Key Features**:
-- Uses Apache HttpClient (already available via storage module)
-- Synchronous POST requests
-- Bearer token authentication
-- Configurable timeout (default: 5 seconds)
-- Proper error handling
-
-**Data Structures**:
-
-```scala
-case class POMetricsPayload(
-    tableId: String,
-    tableName: String,
-    version: Long,
-    timestamp: Long,
-    operation: String,
-    metrics: POMetrics,
-    partitionInfo: Option[Map[String, Set[String]]])
-
-case class POMetrics(
-    numFilesAdded: Long,
-    numBytesAdded: Long,
-    numFilesRemoved: Long,
-    numBytesRemoved: Long,
-    numRowsAdded: Long,
-    numRowsRemoved: Long)
+```
+POST /api/2.1/unity-catalog/delta/preview/metrics
 ```
 
-**JSON Payload Example**:
+Note: it is `/api/2.1/`, not `/api/2.0/`.
+
+### Server Validation
+
+1. Table lookup via `getTableById` to fetch PO-enable status and latest version
+2. `commit_version` (from `file_size_histogram.commit_version`) must be within
+   `validCommitVersionWindow` (default: **10**) of the latest UC-tracked table version
+3. All numeric fields must be non-negative
+4. Feature flag: `databricks.uniformIcebergRestCatalog.enableReportDeltaMetricsEndpoint`
+   (default: false) — must be enabled server-side before the endpoint accepts requests
+
+### What the Server Does with the Payload
+
+Calls `PredictiveOptimizationClient.pushExternalDeltaCommitMetrics` with
+`is_external_commit = Some(true)` so PO can distinguish external commits from native DBR commits.
+
+### JSON Schema (snake_case, nested)
+
+The server uses Jackson `@JsonSubTypes(WRAPPER_OBJECT)` polymorphism, which requires the
+`commit_report` wrapper key.
+
 ```json
 {
-  "tableId": "550e8400-e29b-41d4-a716-446655440000",
-  "tableName": "main.default.my_table",
-  "version": 123,
-  "timestamp": 1234567890000,
-  "operation": "WRITE",
-  "metrics": {
-    "numFilesAdded": 10,
-    "numBytesAdded": 1048576,
-    "numFilesRemoved": 2,
-    "numBytesRemoved": 204800,
-    "numRowsAdded": 1000,
-    "numRowsRemoved": 50
-  },
-  "partitionInfo": {
-    "year": ["2024", "2025"],
-    "month": ["01", "02"]
+  "table_id": "550e8400-e29b-41d4-a716-446655440000",
+  "report": {
+    "commit_report": {
+      "num_files_added": 10,
+      "num_files_removed": 2,
+      "num_bytes_added": 1048576,
+      "num_bytes_removed": 204800,
+      "num_clustered_bytes_added": 524288,
+      "num_rows_inserted": 1000,
+      "num_rows_removed": 50,
+      "num_rows_updated": 25,
+      "file_size_histogram": {
+        "sorted_bin_boundaries": [0, 8192, 65536, 524288, 1048576, 4194304,
+                                  8388608, 16777216, 33554432, 67108864,
+                                  134217728, 268435456, 536870912, 1073741824],
+        "file_counts": [0, 0, 0, 3, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "total_bytes": [0, 0, 0, 1572864, 29360128, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "commit_version": 42
+      }
+    }
   }
 }
 ```
 
+**Important field notes**:
+- `num_rows_inserted` — NOT `num_rows_added`. Used for WRITE/MERGE inserts.
+- `num_rows_removed` — Used for MERGE deletes / DELETE operations.
+- `num_rows_updated` — MERGE updates and UPDATE operations.
+- `num_clustered_bytes_removed` — **intentionally omitted** (see section below).
+- `commit_version` lives inside `file_size_histogram`, not at the top level.
+- All fields are `Option[Long]` — absent from JSON when `None`.
+
 ---
 
-#### 3. Post-Commit Hook (`UpdatePOMetricsHook.scala`)
+## Data Classes (POMetricsClient.scala)
 
-**Location**: `delta/spark/src/main/scala/org/apache/spark/sql/delta/hooks/UpdatePOMetricsHook.scala`
-
-**Purpose**: Implements the PostCommitHook interface to send metrics after each commit
-
-**Key Responsibilities**:
-1. Check if hook is enabled via configuration
-2. Filter for UC-managed tables only
-3. Extract metrics from committed actions:
-   - File metrics: numFilesAdded, numBytesAdded, numFilesRemoved, numBytesRemoved
-   - Row metrics: numRowsAdded, numRowsRemoved (from `AddFile.numLogicalRecords` and `RemoveFile.numLogicalRecords`)
-   - Partition info: Extract unique partition values if table is partitioned
-4. Build JSON payload with table metadata
-5. Send metrics synchronously via POMetricsClient
-6. Handle errors gracefully (failures don't block commits)
-
-**UC Table Detection Logic**:
 ```scala
-private def isUCManagedTable(
-    deltaLog: DeltaLog,
-    catalogTable: Option[CatalogTable]): Boolean = {
-  // Must have a valid table ID
-  if (deltaLog.tableId.isEmpty) return false
+case class ReportDeltaMetricsRequest(
+    @JsonProperty("table_id") tableId: String,
+    @JsonProperty("report") report: CommitReportEnvelope)
 
-  catalogTable match {
-    case Some(ct) =>
-      // Check if catalog is defined (UC tables have catalog.schema.table structure)
-      ct.identifier.catalog.isDefined ||
-      // Or check if table properties indicate it's a Delta table with UC support
-      (ct.properties.get("provider").exists(_.toLowerCase(Locale.ROOT) == "delta") &&
-        deltaLog.tableId.isDefined)
-    case None => false
-  }
-}
+case class CommitReportEnvelope(
+    @JsonProperty("commit_report") commitReport: CommitReport)
+
+case class CommitReport(
+    @JsonProperty("num_files_added")          numFilesAdded:          Option[Long] = None,
+    @JsonProperty("num_files_removed")        numFilesRemoved:        Option[Long] = None,
+    @JsonProperty("num_bytes_added")          numBytesAdded:          Option[Long] = None,
+    @JsonProperty("num_bytes_removed")        numBytesRemoved:        Option[Long] = None,
+    @JsonProperty("num_clustered_bytes_added") numClusteredBytesAdded: Option[Long] = None,
+    // num_clustered_bytes_removed intentionally omitted
+    @JsonProperty("num_rows_inserted")        numRowsInserted:        Option[Long] = None,
+    @JsonProperty("num_rows_removed")         numRowsRemoved:         Option[Long] = None,
+    @JsonProperty("num_rows_updated")         numRowsUpdated:         Option[Long] = None,
+    @JsonProperty("file_size_histogram")      fileSizeHistogram:      Option[FileSizeHistogramPayload] = None)
+
+case class FileSizeHistogramPayload(
+    @JsonProperty("sorted_bin_boundaries") sortedBinBoundaries: Seq[Long],
+    @JsonProperty("file_counts")           fileCounts:          Seq[Long],
+    @JsonProperty("total_bytes")           totalBytes:          Seq[Long],
+    @JsonProperty("commit_version")        commitVersion:       Option[Long] = None)
 ```
-
-**Metrics Extraction**:
-- Iterates through `committedActions` to find `AddFile` and `RemoveFile` actions
-- Aggregates file counts and byte sizes
-- Extracts row counts from `numLogicalRecords` when available in stats
-- Handles missing stats gracefully (row counts default to 0)
-
-**Partition Info Extraction**:
-- Uses `CommittedTransaction.partitionsAddedToOpt` to get partition values
-- Converts `HashSet[Map[String, String]]` to `Map[String, Set[String]]`
-- Groups by partition column name and collects unique values
-
-**Error Handling**:
-- All exceptions caught in `run()` method and logged as warnings
-- Overrides `handleError()` to always log warnings (never throws)
-- Ensures commit always succeeds regardless of HTTP failures
 
 ---
 
-#### 4. Hook Registration (`OptimisticTransaction.scala`)
+## Metrics Extraction
 
-**Location**: `delta/spark/src/main/scala/org/apache/spark/sql/delta/OptimisticTransaction.scala`
+### File-Level Metrics
 
-**Changes**:
-1. Added import for `UpdatePOMetricsHook` (line 39)
-2. Registered hook conditionally (lines 412-416):
+Computed directly from the committed actions — always available.
+
+| Field | Source |
+|-------|--------|
+| `num_files_added` | `addFiles.size` |
+| `num_bytes_added` | `addFiles.map(_.size).sum` |
+| `num_files_removed` | `removeFiles.size` |
+| `num_bytes_removed` | `removeFiles.flatMap(_.size).sum` |
+| `num_clustered_bytes_added` | `addFiles.filter(_.clusteringProvider.isDefined).map(_.size).sum` |
+
+### Row-Level Metrics
+
+Prefer `CommitInfo.operationMetrics` (more accurate, set by Spark operations). Fall back to
+file-level `numLogicalRecords` when `operationMetrics` are absent (e.g. external writers or
+simple WRITE operations that don't populate all keys).
+
+#### `num_rows_inserted`
+
+| Operation | operationMetrics key |
+|-----------|----------------------|
+| MERGE | `numTargetRowsInserted` |
+| WRITE / STREAMING_UPDATE | `numOutputRows` |
+| fallback | `sum(AddFile.numLogicalRecords)` |
+
+#### `num_rows_removed`
+
+| Operation | operationMetrics key |
+|-----------|----------------------|
+| MERGE | `numTargetRowsDeleted` |
+| DELETE | `numDeletedRows` |
+| fallback | `sum(RemoveFile.numLogicalRecords)` |
+
+#### `num_rows_updated`
+
+| Operation | operationMetrics key |
+|-----------|----------------------|
+| MERGE | `numTargetRowsUpdated` |
+| UPDATE | `numUpdatedRows` |
+| fallback | **none** — updated rows are indistinguishable from inserts at the file level |
+
+### File Size Histogram
+
+Built using the existing `FileSizeHistogram` class in OSS Delta.
+
+**Bin boundaries** (bytes): 0, 8 KB, 64 KB, 512 KB, 1 MB, 4 MB, 8 MB, 16 MB, 32 MB, 64 MB,
+128 MB, 256 MB, 512 MB, 1 GB
+
+`commit_version` is set to `txn.committedVersion`. The server uses this to reject stale payloads
+(must be within `validCommitVersionWindow=10` of UC's tracked latest version).
+
+---
+
+## num_clustered_bytes_removed: Investigation & Decision
+
+### The Question
+
+Can we compute `num_clustered_bytes_removed`? It would require knowing which removed files were
+previously clustered.
+
+### OSS Delta File Fields
+
+`AddFile` has `clusteringProvider: Option[String]` (set to `Some("liquid")` for liquid-clustered
+files). `RemoveFile` does **not** have this field — it was never added.
+
+Both `AddFile` and `RemoveFile` have `tags: Map[String, String]`, but there is no clustering-related
+tag key in `AddFile.Tags`. The full tag key list is:
+
+```
+ZCUBE_ID, ZCUBE_ZORDER_BY, ZCUBE_ZORDER_CURVE, INSERTION_TIME,
+PARTITION_ID, OPTIMIZE_TARGET_SIZE, ICEBERG_COMPAT_VERSION
+```
+
+No `CLUSTERING_PROVIDER` tag exists. Clustering state is tracked exclusively via
+`AddFile.clusteringProvider`.
+
+### Discussion
+
+When this gap was raised with the team, someone responded "we don't have tags yet" — meaning they
+thought the clustering info might come from tags. This was incorrect: OSS Delta already has the
+`tags` field on both `AddFile` and `RemoveFile`, but clustering is not stored there.
+
+### Conclusion
+
+To compute `num_clustered_bytes_removed` you would need to:
+
+```
+removed_file.path  →  join against previous snapshot  →  find original AddFile  →  check .clusteringProvider
+```
+
+This is a full snapshot scan on every commit — too expensive for a post-commit hook.
+
+**Decision: omit `num_clustered_bytes_removed` from the payload.** The server's `CommitReport`
+defines it as `Option[Long]` so its absence is valid. PO can approximate clustered bytes removed
+from the historical `num_clustered_bytes_added` series if needed.
+
+---
+
+## Configuration
+
+Defined in `DeltaSQLConf.scala`:
+
+| Spark Config Key | Type | Default | Description |
+|-----------------|------|---------|-------------|
+| `spark.databricks.delta.po.metrics.enabled` | Boolean | `false` | Enable/disable the hook |
+| `spark.databricks.delta.po.metrics.endpoint` | String | (none) | UC endpoint URL |
+| `spark.databricks.delta.po.metrics.authToken` | String | (none) | Bearer token; falls back to `DATABRICKS_TOKEN` env var |
+| `spark.databricks.delta.po.metrics.timeoutMs` | Long | `5000` | HTTP timeout (ms) |
+
+### Example
+
+```scala
+spark.conf.set("spark.databricks.delta.po.metrics.enabled", "true")
+spark.conf.set("spark.databricks.delta.po.metrics.endpoint",
+  "https://<workspace>.databricks.com/api/2.1/unity-catalog/delta/preview/metrics")
+spark.conf.set("spark.databricks.delta.po.metrics.authToken", "dapi...")
+// token can also come from DATABRICKS_TOKEN env var
+```
+
+---
+
+## Hook Registration
+
+Registered inside `catalogTable.foreach` in `OptimisticTransaction.scala` — the same block as
+`UpdateCatalogHook`. This is intentional: the hook only makes sense for tables that have catalog
+metadata (a prerequisite for being UC-managed).
 
 ```scala
 catalogTable.foreach { ct =>
   registerPostCommitHook(UpdateCatalogFactory.getUpdateCatalogHook(ct, spark))
-
-  // Register PO metrics hook for UC-managed tables
   if (spark.conf.get(DeltaSQLConf.DELTA_PO_METRICS_ENABLED)) {
     registerPostCommitHook(UpdatePOMetricsHook(Some(ct)))
   }
 }
 ```
 
-**Hook Execution Order**:
+**Hook execution order**:
 1. ChecksumHook
-2. UpdateCatalogHook (if catalog table exists)
-3. **UpdatePOMetricsHook** (if enabled and catalog table exists)
+2. UpdateCatalogHook (inside catalogTable.foreach)
+3. **UpdatePOMetricsHook** (inside catalogTable.foreach, if enabled)
 4. CheckpointHook
 5. IcebergConverterHook
 6. HudiConverterHook
 
----
-
-#### 5. Test Suite (`UpdatePOMetricsHookSuite.scala`)
-
-**Location**: `delta/spark-unified/src/test/scala/org/apache/spark/sql/delta/hooks/UpdatePOMetricsHookSuite.scala`
-
-**Test Coverage**:
-
-1. **`extractMetrics: mixed add and remove files`**
-   - Tests metrics extraction with multiple AddFile and RemoveFile actions
-   - Verifies file counts, byte sizes, and row counts
-
-2. **`extractMetrics: row metrics from numLogicalRecords`**
-   - Tests row count extraction from stats JSON
-   - Verifies `numRecords` field is correctly parsed
-
-3. **`extractMetrics: handles missing stats gracefully`**
-   - Tests behavior when AddFile has no stats
-   - Ensures file metrics work but row metrics default to 0
-
-4. **`hook disabled by config - skips execution`**
-   - Verifies hook is not executed when `DELTA_PO_METRICS_ENABLED` is false
-   - Ensures no errors even without endpoint configuration
-
-5. **`JSON payload validation`**
-   - Tests JSON serialization/deserialization
-   - Verifies all required fields are present
-   - Tests round-trip conversion
-
-6. **`error handling - commit succeeds when HTTP fails`**
-   - Uses SimpleMockServer returning 500 error
-   - Verifies commit succeeds despite HTTP failure
-   - Checks that HTTP request was attempted
-
-7. **`basic integration with mock server - successful request`**
-   - Tests end-to-end flow with mock HTTP server
-   - Verifies request body contains expected fields
-   - Validates Authorization header is sent correctly
-
-**SimpleMockServer**:
-- Single-threaded HTTP server for testing
-- Accepts one connection at a time
-- Configurable response status code
-- Captures request body and headers for validation
-- ~100 lines of code
+The hook has a secondary UC check inside `run()` via `isUCManagedTable()` as a defense-in-depth
+guard even if somehow called without catalog metadata.
 
 ---
 
-## Key Design Decisions
+## UC Table Detection
 
-### 1. Synchronous vs Asynchronous Delivery
-
-**Decision**: Synchronous HTTP POST
-
-**Rationale**:
-- **Simpler implementation**: No background threads, queues, or retry logic needed
-- **Immediate feedback**: Errors detected and logged immediately
-- **Low overhead**: Typical overhead <100ms under normal conditions
-- **Best-effort delivery**: Single attempt per commit, failures don't retry
-- **No state management**: No need to track pending metrics or handle crashes
-
-**Alternatives Considered**:
-- ❌ Background thread with batching: Complex, requires state management, harder to test
-- ❌ Async futures: Still adds complexity, minimal latency benefit for low-frequency commits
-
-**Trade-offs**:
-- ✅ Adds ~50-200ms to commit time (acceptable for data lake operations)
-- ✅ Simpler code, easier to debug
-- ✅ No risk of lost metrics due to crashes
-- ⚠️ No automatic retry on transient failures (acceptable for best-effort delivery)
-
----
-
-### 2. Table Filtering: UC-Managed Only
-
-**Decision**: Only send metrics for Unity Catalog managed tables
-
-**Rationale**:
-- PO backend expects UC table metadata (table ID, catalog name)
-- Non-UC tables don't have the necessary identifiers
-- Prevents sending irrelevant metrics to PO endpoint
-- Reduces network traffic and endpoint load
-
-**Detection Logic**:
-1. Check if `DeltaLog.tableId` is defined (required for UC tables)
-2. Check if `CatalogTable.identifier.catalog` is defined (UC structure)
-3. Or check if table properties indicate Delta provider with table ID
-
-**Edge Cases Handled**:
-- Path-based tables (no catalog): Filtered out ✓
-- Non-UC catalog tables: Filtered out ✓
-- External tables: Filtered out if no table ID ✓
-
----
-
-### 3. Metrics Included: File & Row Level
-
-**Decision**: Include both file-level and row-level metrics
-
-**File Metrics** (always available):
-- `numFilesAdded`: Count of AddFile actions
-- `numBytesAdded`: Sum of AddFile sizes
-- `numFilesRemoved`: Count of RemoveFile actions
-- `numBytesRemoved`: Sum of RemoveFile sizes
-
-**Row Metrics** (best-effort):
-- `numRowsAdded`: Sum of `AddFile.numLogicalRecords`
-- `numRowsRemoved`: Sum of `RemoveFile.numLogicalRecords`
-
-**Rationale**:
-- File metrics are always accurate (required fields)
-- Row metrics provide more value to PO for optimization decisions
-- Row metrics may be unavailable if stats collection is disabled
-- PO backend handles missing row metrics gracefully
-
-**Stats Extraction**:
-- Parses `AddFile.stats` JSON to get `numRecords`
-- Uses `numLogicalRecords` property which accounts for deletion vectors
-- Defaults to 0 if stats are missing or malformed
-
----
-
-### 4. Authentication: Bearer Token
-
-**Decision**: Simple bearer token authentication
-
-**Configuration Priority**:
-1. `spark.databricks.delta.po.metrics.authToken` (Spark config)
-2. `DATABRICKS_TOKEN` environment variable (fallback)
-
-**Rationale**:
-- Simple and standard (Authorization: Bearer <token>)
-- Consistent with Databricks authentication patterns
-- Environment variable fallback for ease of use
-- No complex OAuth/OIDC needed for internal endpoint
-
-**Security Considerations**:
-- Token passed via HTTPS only (assumed for UC endpoints)
-- No token logging or exposure in error messages
-- Configuration marked as `.internal()` (not user-facing)
-
----
-
-### 5. Error Handling: Best-Effort Delivery
-
-**Decision**: Failures logged but never block commits
-
-**Error Categories**:
-
-| Error Type | Handling | User Impact |
-|------------|----------|-------------|
-| HTTP 4xx/5xx | Log warning | Commit succeeds |
-| Connection timeout | Log warning | Commit succeeds |
-| Network failures | Log warning | Commit succeeds |
-| Missing config | Skip silently (INFO log) | Commit succeeds |
-| JSON serialization | Log error | Commit succeeds |
-
-**Rationale**:
-- Commit correctness is more important than metrics delivery
-- PO can handle missing metrics (graceful degradation)
-- Failures are logged for debugging
-- No retry logic to prevent cascading delays
-
-**Logging Pattern**:
 ```scala
-// Success
-logInfo(s"Successfully sent PO metrics for version $version")
-
-// Failure
-logWarning(s"Failed to send PO metrics for version $version: ${error.getMessage}", error)
-```
-
----
-
-### 6. Timeout Configuration
-
-**Decision**: 5-second default timeout, user-configurable
-
-**Rationale**:
-- 5 seconds is long enough for most network conditions
-- Short enough to prevent blocking commits for too long
-- User can adjust based on their network conditions
-- Applies to both connection and socket timeouts
-
-**Configuration**:
-```scala
-spark.conf.set("spark.databricks.delta.po.metrics.timeoutMs", "10000") // 10 seconds
-```
-
----
-
-### 7. Partition Information: Optional Field
-
-**Decision**: Include partition info when available, make it optional
-
-**Included When**:
-- Table is partitioned
-- `CommittedTransaction.partitionsAddedToOpt` is defined
-- At least one partition was modified
-
-**Format**:
-```json
-"partitionInfo": {
-  "year": ["2024", "2025"],
-  "month": ["01", "02", "03"]
+private def isUCManagedTable(deltaLog: DeltaLog, catalogTable: Option[CatalogTable]): Boolean = {
+  if (deltaLog.tableId.isEmpty) return false
+  catalogTable match {
+    case Some(ct) =>
+      ct.identifier.catalog.isDefined ||
+      (ct.properties.get("provider").exists(_.toLowerCase(Locale.ROOT) == "delta") &&
+        deltaLog.tableId.nonEmpty)
+    case None => false
+  }
 }
 ```
 
-**Rationale**:
-- PO can use partition info for smarter optimization decisions
-- Not all tables are partitioned (make it optional)
-- Captures which partitions were affected by the commit
-- Helps PO understand data distribution patterns
+`DeltaLog.tableId` is a plain `String` (not `Option[String]`). It is empty for non-UC tables.
 
 ---
 
-### 8. No Batching or Queuing
+## Error Handling
 
-**Decision**: Send one HTTP request per commit, no batching
+The hook is best-effort: no exception from `run()` ever propagates to the commit.
 
-**Rationale**:
-- Commits are relatively infrequent in data lake scenarios
-- Batching adds complexity (queue management, flush logic, failure handling)
-- Immediate delivery provides faster feedback to PO
-- No risk of losing batched metrics on process crash
-
-**When to Reconsider**:
-- If commit rate is very high (>10/sec per table)
-- If network latency is consistently high (>500ms)
-- If PO backend requests batching for performance
+| Error type | Behavior |
+|------------|----------|
+| HTTP 4xx/5xx | Throw inside `sendMetrics`; caught by `run()`, logged as WARNING |
+| Connection timeout | Same |
+| Missing endpoint config | Early return with INFO log |
+| Missing auth token | Exception; caught, logged as WARNING |
+| JSON serialization failure | Caught, logged as WARNING |
 
 ---
 
-### 9. Testing Strategy: Simple Mock Server
+## Implementation Notes (Lessons Learned)
 
-**Decision**: Implement SimpleMockServer for integration testing
+### `spark.conf.get(key: String)` returns `String`, not `Option[String]`
 
-**Why Not Use Existing Libraries**:
-- Delta codebase has no mock HTTP server libraries
-- Adding external dependency (WireMock, MockWebServer) requires build changes
-- SimpleMockServer is ~100 lines, easy to understand and maintain
-- Sufficient for testing basic HTTP POST functionality
-
-**Test Coverage**:
-- ✅ Metrics extraction logic (unit tests)
-- ✅ JSON serialization (unit tests)
-- ✅ HTTP request is sent (integration test with mock server)
-- ✅ Error handling (integration test with 500 response)
-- ✅ Configuration handling (unit tests)
-
----
-
-## Performance Considerations
-
-### Expected Overhead Per Commit
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| Metrics extraction | <1ms | Iterating over actions (typically <1000) |
-| JSON serialization | <1ms | Using Jackson (optimized) |
-| HTTP POST | 50-200ms | Network round-trip to UC endpoint |
-| **Total** | **~50-200ms** | Acceptable for data lake commit operations |
-
-### Optimization Strategies
-
-1. **Timeout keeps it bounded**: Max delay is timeout value (5s default)
-2. **No retry logic**: Failures return immediately, don't compound
-3. **Minimal memory allocation**: Metrics struct is small (~200 bytes)
-4. **Streaming JSON serialization**: Jackson writes directly to HTTP stream
-
-### When Performance Matters
-
-- **High-frequency commits**: If commits happen >1/sec, consider batching
-- **Large commit logs**: Metrics extraction is O(n) on number of actions
-- **Slow networks**: Increase timeout or disable hook temporarily
-
----
-
-## Configuration Examples
-
-### Basic Setup (UC Production)
+For optional config entries, use `spark.conf.getOption(key: String)` to get `Option[String]`.
+Using `spark.conf.get(key)` returns a raw `String` and throws if unset — do not do:
 
 ```scala
-spark.conf.set("spark.databricks.delta.po.metrics.enabled", "true")
-spark.conf.set("spark.databricks.delta.po.metrics.endpoint",
-  "https://your-uc-endpoint.databricks.com/api/2.0/unity-catalog/delta/preview/metrics")
-spark.conf.set("spark.databricks.delta.po.metrics.authToken", "dapi...")
+// WRONG
+spark.conf.get(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key) match {
+  case Some(url) => ...  // compile error: String is not Option
+
+// CORRECT
+spark.conf.getOption(DeltaSQLConf.DELTA_PO_METRICS_ENDPOINT.key) match {
+  case Some(url) if url.nonEmpty => ...
 ```
 
-### Using Environment Variable for Token
+### `DeltaLog.tableId` is `String`, not `Option[String]`
 
+```scala
+// WRONG
+deltaLog.tableId.getOrElse { throw ... }
+deltaLog.tableId.isDefined
+
+// CORRECT
+if (deltaLog.tableId.isEmpty) throw ...
+deltaLog.tableId.nonEmpty
+```
+
+### Non-ASCII characters fail scalastyle
+
+Use `-` instead of `—` (em dash) and `->` instead of `→` in all Scala source comments.
+The scalastyle `nonascii.message` rule rejects any non-ASCII characters in source files.
+
+### Integration tests need UC-managed table context
+
+Writing to a temp path (`spark.range(n).write.format("delta").save(path)`) does not produce a
+`CatalogTable`, so the hook is never registered for such tables. Integration tests for the
+end-to-end hook flow require a real catalog table. To test the HTTP client in isolation, call
+`POMetricsClient.sendMetrics` directly with a `SimpleMockServer`.
+
+---
+
+## Test Suite
+
+**Location**: `spark-unified/src/test/scala/.../hooks/UpdatePOMetricsHookSuite.scala`
+
+| Test | What it covers |
+|------|---------------|
+| `extractRowsInserted: prefers operationMetrics, falls back to file stats` | MERGE/WRITE/fallback paths for inserted rows |
+| `extractRowsRemoved: prefers operationMetrics, falls back to file stats` | MERGE/DELETE/fallback paths for removed rows |
+| `extractRowsUpdated: uses operationMetrics only, no file-level fallback` | MERGE/UPDATE paths; confirms no file fallback |
+| `buildFileSizeHistogram: distributes files into correct bins` | Histogram bin placement and commit_version |
+| `JSON payload validation - matches server contract (snake_case, nested)` | snake_case fields, nested structure, no camelCase leaks |
+| `JSON payload: optional fields are omitted when None` | None fields absent from JSON; clustered_bytes_removed never appears |
+| `hook disabled by config - skips execution` | No error when endpoint not configured and hook disabled |
+| `POMetricsClient: throws RuntimeException on HTTP 5xx response` | Client throws on error, request count verified |
+| `POMetricsClient: sends correct Authorization header and JSON body` | Bearer token header, snake_case JSON body |
+
+Run with:
 ```bash
-export DATABRICKS_TOKEN="dapi..."
+build/sbt 'spark/testOnly *UpdatePOMetricsHookSuite'
 ```
-
-```scala
-spark.conf.set("spark.databricks.delta.po.metrics.enabled", "true")
-spark.conf.set("spark.databricks.delta.po.metrics.endpoint", "https://...")
-// Token automatically picked up from DATABRICKS_TOKEN env var
-```
-
-### Custom Timeout (Slow Network)
-
-```scala
-spark.conf.set("spark.databricks.delta.po.metrics.enabled", "true")
-spark.conf.set("spark.databricks.delta.po.metrics.endpoint", "https://...")
-spark.conf.set("spark.databricks.delta.po.metrics.authToken", "dapi...")
-spark.conf.set("spark.databricks.delta.po.metrics.timeoutMs", "10000") // 10 seconds
-```
-
-### Development/Testing with Local Endpoint
-
-```scala
-spark.conf.set("spark.databricks.delta.po.metrics.enabled", "true")
-spark.conf.set("spark.databricks.delta.po.metrics.endpoint", "http://localhost:8888/metrics")
-spark.conf.set("spark.databricks.delta.po.metrics.authToken", "test-token")
-spark.conf.set("spark.databricks.delta.po.metrics.timeoutMs", "1000") // 1 second
-```
-
----
-
-## Testing & Validation
-
-### Running the Test Suite
-
-```bash
-cd delta
-build/sbt 'testOnly *.UpdatePOMetricsHookSuite'
-```
-
-### Manual Testing Steps
-
-1. **Start a mock endpoint** (or use real UC endpoint):
-   ```bash
-   # Example: Simple HTTP server for testing
-   python3 -m http.server 8888
-   ```
-
-2. **Enable the hook**:
-   ```scala
-   spark.conf.set("spark.databricks.delta.po.metrics.enabled", "true")
-   spark.conf.set("spark.databricks.delta.po.metrics.endpoint", "http://localhost:8888")
-   spark.conf.set("spark.databricks.delta.po.metrics.authToken", "test-token")
-   ```
-
-3. **Create and modify a Delta table**:
-   ```scala
-   // Create table
-   spark.range(1000).write.format("delta").save("/tmp/test_table")
-
-   // Append data
-   spark.range(1000, 2000).write.format("delta").mode("append").save("/tmp/test_table")
-
-   // Check logs for PO metrics messages
-   ```
-
-4. **Verify HTTP requests**:
-   - Check server logs for POST requests
-   - Verify request body contains expected JSON
-   - Verify Authorization header is present
-
-### Debugging Tips
-
-**Enable debug logging**:
-```scala
-spark.sparkContext.setLogLevel("DEBUG")
-```
-
-**Check for hook execution**:
-```
-INFO UpdatePOMetricsHook: Successfully sent PO metrics for table ... version 1
-```
-
-**Check for errors**:
-```
-WARN UpdatePOMetricsHook: Failed to send PO metrics for version 1: Connection refused
-```
-
-**Verify hook is registered**:
-- Set breakpoint in `UpdatePOMetricsHook.run()`
-- Or add temporary log statement in hook's `run()` method
-
----
-
-## Code Quality & Standards
-
-### Formatting & Style
-
-All code passes:
-- ✅ `scalafmtAll` - Scala code formatting
-- ✅ `scalastyle` - Scala style checks (0 errors, 0 warnings)
-- ✅ Apache Spark Scala Style Guide compliance
-
-### Documentation
-
-- All classes have scaladoc comments
-- All public methods documented
-- Complex logic has inline comments
-- Decision rationale included in comments
-
-### Error Handling
-
-- All exceptions caught and handled gracefully
-- Clear error messages with context
-- Logging follows Delta Lake patterns (using `DeltaLogging` trait)
-- Uses structured logging with MDC keys
 
 ---
 
 ## Dependencies
 
-**No new dependencies required!**
-
-Existing dependencies used:
-- **Apache HttpClient**: Available via `storage` module
-- **Jackson JSON**: Already used via `JsonUtils.scala`
-- **ScalaTest**: Already used for testing
+No new dependencies. Uses:
+- **Apache HttpClient** — already in `storage` module
+- **Jackson** — already used via `JsonUtils`
+- **`FileSizeHistogram`** — already in `delta/spark` (`stats` package)
 
 ---
 
-## Future Enhancements (Out of Scope for Phase 1)
+## Code Quality
 
-### Phase 1.5 Candidates
-
-1. **Enhanced Heuristics**: Fixed-schedule heuristics when metrics are missing
-2. **Async Delivery with Batching**: If high-frequency commits become an issue
-3. **Retry Logic**: Exponential backoff for transient failures
-4. **Metrics Aggregation**: Pre-aggregate metrics before sending
-5. **Compressed Payloads**: Use gzip compression for large payloads
-
-### Phase 2 Candidates
-
-1. **Read Metrics**: Capture scan metrics from external reads
-2. **Query Metrics**: Include query execution statistics
-3. **File-Level Statistics**: Send detailed file-level stats (min/max values, nulls)
-4. **Delta Sharing Integration**: Send metrics for shared tables
+All files pass:
+- `build/sbt scalastyle` — 0 errors
+- `build/sbt scalafmtCheckAll` — 0 errors
 
 ---
 
-## Troubleshooting
+## Deploying to Databricks
 
-### Issue: Hook not executing
+### Build the JAR
 
-**Symptoms**: No log messages about PO metrics
+```bash
+build/sbt "spark/package"
+```
 
-**Possible Causes**:
-1. Hook not enabled: Check `spark.databricks.delta.po.metrics.enabled`
-2. Table not UC-managed: Verify table has catalog and table ID
-3. No catalog table metadata: Hook only runs when `catalogTable` is defined
+Output: `spark-unified/target/scala-2.13/delta-spark_2.13-4.1.0-SNAPSHOT.jar`
 
-**Solution**:
+### Cluster Spark Config
+
+Upload the JAR to DBFS or a cluster-accessible path, then set:
+
+```
+spark.driver.extraClassPath   /path/to/delta-spark_2.13-4.1.0-SNAPSHOT.jar
+spark.executor.extraClassPath /path/to/delta-spark_2.13-4.1.0-SNAPSHOT.jar
+
+spark.databricks.delta.po.metrics.enabled   true
+spark.databricks.delta.po.metrics.endpoint  https://<workspace>.databricks.com/api/2.1/unity-catalog/delta/preview/metrics
+spark.databricks.delta.po.metrics.authToken dapi...
+```
+
+The `authToken` can also be omitted if the `DATABRICKS_TOKEN` environment variable is set on the
+cluster.
+
+### Sanity Check Before Full Rollout
+
+Verify the endpoint is reachable and accepts payloads before attaching the hook to live traffic:
+
 ```scala
-// Verify config
-spark.conf.get("spark.databricks.delta.po.metrics.enabled")
+import org.apache.spark.sql.delta.DeltaLog
+import org.apache.spark.sql.delta.hooks.{CommitReport, CommitReportEnvelope,
+  POMetricsClient, ReportDeltaMetricsRequest}
 
-// Check table metadata
-val deltaLog = DeltaLog.forTable(spark, "/path/to/table")
-println(s"Table ID: ${deltaLog.tableId}")
+// Get the real table UUID from DeltaLog
+val tableId = DeltaLog.forTable(spark, "catalog.schema.table").tableId
+println(s"table_id = $tableId")
 
-// Check if table is registered in catalog
-spark.catalog.tableExists("catalog.schema.table")
+// Send a minimal test payload directly - bypasses the hook guard logic
+val req = ReportDeltaMetricsRequest(
+  tableId = tableId,
+  report  = CommitReportEnvelope(CommitReport(numFilesAdded = Some(0L))))
+POMetricsClient.sendMetrics(spark, req)
+// If this returns without throwing, the endpoint is reachable and auth is correct
 ```
 
 ---
 
-### Issue: HTTP requests failing
+## Future Work
 
-**Symptoms**: WARNING logs about failed HTTP requests
-
-**Possible Causes**:
-1. Endpoint URL incorrect or unreachable
-2. Authentication token invalid
-3. Network issues or firewall blocking
-4. Timeout too short for network conditions
-
-**Solution**:
-```scala
-// Test endpoint manually
-import org.apache.http.client.methods.HttpPost
-import org.apache.http.impl.client.HttpClientBuilder
-
-val httpClient = HttpClientBuilder.create().build()
-val httpPost = new HttpPost("https://your-endpoint")
-httpPost.setHeader("Authorization", "Bearer your-token")
-val response = httpClient.execute(httpPost)
-println(s"Status: ${response.getStatusLine.getStatusCode}")
-
-// Increase timeout if needed
-spark.conf.set("spark.databricks.delta.po.metrics.timeoutMs", "30000")
-```
-
----
-
-### Issue: Missing row metrics
-
-**Symptoms**: `numRowsAdded` and `numRowsRemoved` are 0
-
-**Possible Causes**:
-1. Stats collection disabled: Check `spark.databricks.delta.stats.collect`
-2. Files written without stats
-3. External writer that doesn't collect stats
-
-**Solution**:
-```scala
-// Enable stats collection
-spark.conf.set("spark.databricks.delta.stats.collect", "true")
-
-// Verify stats in Delta log
-val deltaLog = DeltaLog.forTable(spark, "/path/to/table")
-val addFiles = deltaLog.snapshot.allFiles.collect()
-addFiles.foreach { file =>
-  println(s"File: ${file.path}, Stats: ${file.stats}")
-}
-```
-
----
-
-## Monitoring & Observability
-
-### Key Metrics to Monitor
-
-1. **Success Rate**: Percentage of successful HTTP requests
-2. **Latency**: Time to send metrics (p50, p95, p99)
-3. **Failure Rate**: Count of failed attempts per hour
-4. **Timeout Rate**: Count of timeouts vs other errors
-
-### Logging
-
-**INFO level** (normal operation):
-```
-INFO UpdatePOMetricsHook: Successfully sent PO metrics for table main.default.table version 42
-```
-
-**WARNING level** (failures):
-```
-WARN UpdatePOMetricsHook: Failed to send PO metrics for version 42: Connection timeout
-```
-
-**DEBUG level** (detailed info):
-```
-DEBUG UpdatePOMetricsHook: PO metrics hook is disabled, skipping
-DEBUG UpdatePOMetricsHook: Table is not a UC-managed table, skipping PO metrics
-```
-
----
-
-## References
-
-- **Design Doc**: https://docs.google.com/document/d/1pbMbCBIvU7X8cFdb14HrJWhIfS3vzHcvsXBVv0GXp_0/edit?tab=t.0#heading=h.ch26vislrfey
-- **UC Metrics Endpoint**: `/api/2.0/unity-catalog/delta/preview/metrics`
-- **Delta Lake Protocol**: [PROTOCOL.md](PROTOCOL.md)
-- **Post-Commit Hooks**: `PostCommitHook.scala`
-
----
-
-## Contributors
-
-- Implementation Date: January 21, 2026
-- Feature Flag: `spark.databricks.delta.po.metrics.enabled`
-- Default State: Disabled (opt-in)
-
----
-
-## Summary
-
-This implementation provides a production-ready, well-tested solution for sending Delta commit metrics to the PO backend. Key achievements:
-
-✅ **Simple & Reliable**: Synchronous delivery, no complex state management
-✅ **Best-Effort**: Failures don't block commits
-✅ **Well-Tested**: 7 comprehensive test cases with mock HTTP server
-✅ **Configurable**: All parameters tunable via Spark configs
-✅ **Performant**: <200ms overhead per commit
-✅ **Secure**: Bearer token authentication with env var fallback
-✅ **Observable**: Clear logging for debugging and monitoring
-✅ **Code Quality**: Passes all style checks and follows Delta conventions
-
-The implementation is ready for integration and production deployment.
+- **Phase 1.5**: Fixed-schedule heuristics when metrics are missing from PO's view
+- **Phase 2**: Capture scan metrics from external reads
+- **num_clustered_bytes_removed**: Would require the Delta protocol to propagate
+  `clusteringProvider` onto `RemoveFile` (currently missing by design)
