@@ -54,6 +54,54 @@ class UpdatePOMetricsHookSuite extends QueryTest
   }
 
   // ---------------------------------------------------------------------------
+  // resolveTableId tests
+  // ---------------------------------------------------------------------------
+
+  test("resolveTableId: prefers UC table ID from catalogTable.properties over deltaLog.tableId") {
+    withTempDir { dir =>
+      spark.range(1).write.format("delta").save(dir.getCanonicalPath)
+      val deltaLog = DeltaLog.forTable(spark, dir.getCanonicalPath)
+      val hook = UpdatePOMetricsHook(None)
+
+      // Sub-case 1: io.unitycatalog.tableId present -> use it, not deltaLog.tableId
+      val ctWithUCId = CatalogTable(
+        identifier = TableIdentifier("t", Some("s"), Some("c")),
+        tableType = CatalogTableType.MANAGED,
+        storage = CatalogStorageFormat.empty,
+        schema = new StructType(),
+        properties = Map("io.unitycatalog.tableId" -> "uc-uuid-123")
+      )
+      assert(hook.resolveTableId(Some(ctWithUCId), deltaLog) == "uc-uuid-123",
+        "UC table ID from properties must win over deltaLog.tableId")
+
+      // Sub-case 2: legacy key ucTableId -> use it
+      val ctWithLegacyId = CatalogTable(
+        identifier = TableIdentifier("t", Some("s"), Some("c")),
+        tableType = CatalogTableType.MANAGED,
+        storage = CatalogStorageFormat.empty,
+        schema = new StructType(),
+        properties = Map("ucTableId" -> "legacy-uuid-456")
+      )
+      assert(hook.resolveTableId(Some(ctWithLegacyId), deltaLog) == "legacy-uuid-456",
+        "legacy ucTableId key must be honoured")
+
+      // Sub-case 3: no UC table ID in properties -> fall back to deltaLog.tableId
+      val ctNoId = CatalogTable(
+        identifier = TableIdentifier("t", Some("s"), Some("c")),
+        tableType = CatalogTableType.MANAGED,
+        storage = CatalogStorageFormat.empty,
+        schema = new StructType()
+      )
+      assert(hook.resolveTableId(Some(ctNoId), deltaLog) == deltaLog.tableId,
+        "must fall back to deltaLog.tableId when properties have no UC table ID")
+
+      // Sub-case 4: no catalogTable at all -> fall back to deltaLog.tableId
+      assert(hook.resolveTableId(None, deltaLog) == deltaLog.tableId,
+        "must fall back to deltaLog.tableId when catalogTable is None")
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // buildRequest tests - no reflection, no Delta infrastructure
   // ---------------------------------------------------------------------------
 

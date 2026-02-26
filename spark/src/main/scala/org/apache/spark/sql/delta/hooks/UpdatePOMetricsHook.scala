@@ -17,6 +17,9 @@
 package org.apache.spark.sql.delta.hooks
 
 // scalastyle:off import.ordering.noEmptyLine
+import io.delta.storage.commit.uccommitcoordinator.UCCommitCoordinatorClient.{
+  UC_TABLE_ID_KEY, UC_TABLE_ID_KEY_OLD}
+
 import org.apache.spark.sql.delta.{CommittedTransaction, DeltaLog}
 import org.apache.spark.sql.delta.actions.{Action, AddFile, CommitInfo, RemoveFile}
 import org.apache.spark.sql.delta.logging.DeltaLogKeys
@@ -79,7 +82,7 @@ case class UpdatePOMetricsHook(catalogTable: Option[CatalogTable])
     }
 
     try {
-      val tableId = txn.deltaLog.tableId
+      val tableId = resolveTableId(catalogTable, txn.deltaLog)
       if (tableId.isEmpty) {
         throw new IllegalStateException("UC-managed table must have a table ID")
       }
@@ -224,6 +227,27 @@ case class UpdatePOMetricsHook(catalogTable: Option[CatalogTable])
   // ---------------------------------------------------------------------------
   // UC table detection
   // ---------------------------------------------------------------------------
+
+  /**
+   * Resolves the table ID to send in the PO metrics payload.
+   *
+   * Prefers the UC table ID stored in CatalogTable.properties (injected by the UC connector
+   * when loading the table) over DeltaLog.tableId (Delta Metadata.id). These differ when the
+   * first Delta commit was written by a non-DBR client: such a client generates a random UUID
+   * for Metadata.id rather than using the UC-registered table ID, causing the PO endpoint to
+   * return 404. For DBR-created tables both IDs are identical, so the fallback is safe.
+   */
+  private[hooks] def resolveTableId(
+      catalogTable: Option[CatalogTable],
+      deltaLog: DeltaLog): String = {
+    catalogTable
+      .flatMap { ct =>
+        ct.properties.get(UC_TABLE_ID_KEY)
+          .orElse(ct.properties.get(UC_TABLE_ID_KEY_OLD))
+          .filter(_.nonEmpty)
+      }
+      .getOrElse(deltaLog.tableId)
+  }
 
   private def isUCManagedTable(
       deltaLog: DeltaLog,
