@@ -53,6 +53,8 @@ Delta Commit
 |------|--------|
 | `spark/src/main/scala/.../sources/DeltaSQLConf.scala` | 4 new config entries |
 | `spark/src/main/scala/.../OptimisticTransaction.scala` | Hook registration |
+| `spark/src/main/scala/.../hooks/UpdatePOMetricsHook.scala` | Follow-up fixes for UC table ID resolution |
+| `spark-unified/src/test/scala/.../hooks/UpdatePOMetricsHookSuite.scala` | Follow-up tests for table ID resolution precedence |
 
 ---
 
@@ -117,7 +119,7 @@ The server uses Jackson `@JsonSubTypes(WRAPPER_OBJECT)` polymorphism, which requ
 - `num_rows_inserted` — NOT `num_rows_added`. Used for WRITE/MERGE inserts.
 - `num_rows_removed` — Used for MERGE deletes / DELETE operations.
 - `num_rows_updated` — MERGE updates and UPDATE operations.
-- `num_clustered_bytes_removed` — **intentionally omitted** (see section below).
+- `num_clustered_bytes_removed` — supported by the server as optional, but intentionally omitted by this client (see section below).
 - `commit_version` lives inside `file_size_histogram`, not at the top level.
 - All fields are `Option[Long]` — absent from JSON when `None`.
 
@@ -306,7 +308,7 @@ guard even if somehow called without catalog metadata.
 
 ---
 
-## UC Table Detection
+## UC Table Detection and Table ID Resolution
 
 ```scala
 private def isUCManagedTable(deltaLog: DeltaLog, catalogTable: Option[CatalogTable]): Boolean = {
@@ -321,7 +323,23 @@ private def isUCManagedTable(deltaLog: DeltaLog, catalogTable: Option[CatalogTab
 }
 ```
 
-`DeltaLog.tableId` is a plain `String` (not `Option[String]`). It is empty for non-UC tables.
+### Table ID Resolution (post-implementation fix)
+
+For PO reporting, the hook now resolves the outgoing `table_id` in this order:
+
+1. `catalogTable.properties["io.unitycatalog.tableId"]` (Databricks-internal key)
+2. `catalogTable.properties["ucTableId"]` (legacy Databricks-internal key)
+3. `catalogTable.storage.properties["fs.unitycatalog.table.id"]`
+   (open-source UCSingleCatalog key)
+4. `deltaLog.tableId` fallback (Delta metadata ID)
+
+This was added because the Delta metadata ID can diverge from the UC-registered table ID when the
+first Delta commit is written by a non-DBR client. In that case, sending `deltaLog.tableId` can
+lead to 404s from the PO metrics endpoint. Catalog metadata is the authoritative source when
+present.
+
+`DeltaLog.tableId` is a plain `String` (not `Option[String]`) and remains the fallback when no
+catalog-derived UC ID is available.
 
 ---
 
@@ -368,6 +386,12 @@ if (deltaLog.tableId.isEmpty) throw ...
 deltaLog.tableId.nonEmpty
 ```
 
+### `table_id` for PO payloads should prefer catalog UC ID over Delta metadata ID
+
+For UC tables, use catalog metadata keys first (`io.unitycatalog.tableId`, `ucTableId`, and
+`storage.properties["fs.unitycatalog.table.id"]`) before falling back to `DeltaLog.tableId`.
+This avoids misreporting for tables whose first Delta commit came from non-DBR writers.
+
 ### Non-ASCII characters fail scalastyle
 
 Use `-` instead of `—` (em dash) and `->` instead of `→` in all Scala source comments.
@@ -391,6 +415,7 @@ end-to-end hook flow require a real catalog table. To test the HTTP client in is
 | `extractRowsInserted: prefers operationMetrics, falls back to file stats` | MERGE/WRITE/fallback paths for inserted rows |
 | `extractRowsRemoved: prefers operationMetrics, falls back to file stats` | MERGE/DELETE/fallback paths for removed rows |
 | `extractRowsUpdated: uses operationMetrics only, no file-level fallback` | MERGE/UPDATE paths; confirms no file fallback |
+| `resolveTableId: prefers UC table ID keys over deltaLog.tableId` | Verifies precedence across internal, legacy, OSS UCSingleCatalog, and fallback paths |
 | `buildFileSizeHistogram: distributes files into correct bins` | Histogram bin placement and commit_version |
 | `JSON payload validation - matches server contract (snake_case, nested)` | snake_case fields, nested structure, no camelCase leaks |
 | `JSON payload: optional fields are omitted when None` | None fields absent from JSON; clustered_bytes_removed never appears |
