@@ -43,6 +43,7 @@ import io.delta.spark.internal.v2.utils.ScalaUtils;
 import io.delta.spark.internal.v2.utils.SchemaUtils;
 import io.delta.spark.internal.v2.utils.StreamingHelper;
 import java.io.IOException;
+import java.nio.channels.ClosedByInterruptException;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -295,7 +296,17 @@ public class SparkMicroBatchStream
     DeltaSourceOffset deltaStartOffset = DeltaSourceOffset.apply(tableId, startOffset);
     initForTriggerAvailableNowIfNeeded(deltaStartOffset);
     // Return null when no data is available for this batch.
-    DeltaSourceOffset endOffset = latestOffsetInternal(deltaStartOffset, limit).orElse(null);
+    DeltaSourceOffset endOffset;
+    try {
+      endOffset = latestOffsetInternal(deltaStartOffset, limit).orElse(null);
+    } catch (Exception e) {
+      if (isInterruptedByStop(e)) {
+        logger.info("latestOffset() interrupted during stream shutdown, returning null");
+        isFirstBatch = false;
+        return null;
+      }
+      throw e;
+    }
     isFirstBatch = false;
     return endOffset;
   }
@@ -316,6 +327,29 @@ public class SparkMicroBatchStream
     }
 
     return endOffset;
+  }
+
+  /**
+   * Returns true if the exception was caused by a Spark stream stop interrupt. When Spark stops a
+   * streaming query it calls {@link Thread#interrupt()} on the query thread. Reading delta log
+   * files via NIO channels causes a {@link ClosedByInterruptException} (an {@link IOException}),
+   * not an {@link InterruptedException}, so Spark's own {@code isInterruptedByStop} check misses
+   * it. We detect it by checking (1) the thread interrupt flag that {@link
+   * ClosedByInterruptException} sets but does not clear, and (2) walking the full cause chain
+   * looking for either {@link ClosedByInterruptException} or {@link InterruptedException}.
+   */
+  private static boolean isInterruptedByStop(Throwable t) {
+    if (Thread.currentThread().isInterrupted()) {
+      return true;
+    }
+    Throwable cause = t;
+    while (cause != null) {
+      if (cause instanceof ClosedByInterruptException || cause instanceof InterruptedException) {
+        return true;
+      }
+      cause = cause.getCause();
+    }
+    return false;
   }
 
   @Override
