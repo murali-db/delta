@@ -36,7 +36,6 @@ import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.utils.FileStatus;
 import io.delta.storage.LogStore;
 import java.io.*;
-import java.nio.channels.ClosedByInterruptException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
@@ -105,16 +104,6 @@ public class DefaultJsonHandler implements JsonHandler {
         // initialize the next file reader or return false if there are no more files to
         // read.
         try {
-          // EXPERIMENT: ci-baseline-no-patch only — make interrupt race deterministic.
-          // Sleep here so the thread is interruptible when StopStream fires. On interrupt,
-          // re-set the flag and throw ClosedByInterruptException, which is exactly what the
-          // real race produces. Remove this block before any production use.
-          try {
-            Thread.sleep(50);
-          } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            throw new ClosedByInterruptException();
-          }
           if (currentFileReader == null || (nextLine = currentFileReader.readLine()) == null) {
             // `nextLine` will initially be null because `currentFileReader` is guaranteed
             // to be null

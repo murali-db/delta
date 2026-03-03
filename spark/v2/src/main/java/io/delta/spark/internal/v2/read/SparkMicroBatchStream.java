@@ -26,6 +26,7 @@ import io.delta.kernel.data.ColumnarBatch;
 import io.delta.kernel.data.FilteredColumnarBatch;
 import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
+import io.delta.kernel.exceptions.KernelEngineException;
 import io.delta.kernel.exceptions.UnsupportedTableFeatureException;
 import io.delta.kernel.internal.DeltaLogActionUtils.DeltaAction;
 import io.delta.kernel.internal.SnapshotImpl;
@@ -291,6 +292,18 @@ public class SparkMicroBatchStream
   public Offset latestOffset(Offset startOffset, ReadLimit limit) {
     Objects.requireNonNull(startOffset, "startOffset should not be null for MicroBatchStream");
     Objects.requireNonNull(limit, "limit should not be null for MicroBatchStream");
+
+    // EXPERIMENT: ci-baseline-no-patch only — make interrupt race deterministic.
+    // Sleep on every poll so StopStream's Thread.interrupt() lands here. On interrupt,
+    // throw the exact exception chain the real race produces. Remove before production.
+    try {
+      Thread.sleep(100);
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw new KernelEngineException(
+          "Error reading JSON file: interrupted during latestOffset [experiment]",
+          new java.nio.channels.ClosedByInterruptException());
+    }
 
     DeltaSourceOffset deltaStartOffset = DeltaSourceOffset.apply(tableId, startOffset);
     initForTriggerAvailableNowIfNeeded(deltaStartOffset);
