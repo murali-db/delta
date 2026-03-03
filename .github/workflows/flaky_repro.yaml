@@ -1,10 +1,5 @@
 name: "Flaky Repro"
 on:
-  push:
-    branches:
-      - ci-baseline-no-patch
-      - ci-partial-patch-6057
-      - fix-flaky-deltav2source-stop-interrupt
   pull_request:
     branches:
       - ci-test-base
