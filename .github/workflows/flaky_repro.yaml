@@ -15,6 +15,7 @@ jobs:
     env:
       SPARK_VERSION: "4.0"
       SCALA_VERSION: "2.13.16"
+      XDG_RUNTIME_DIR: /tmp
     steps:
       - uses: actions/checkout@v3
       - name: install java
