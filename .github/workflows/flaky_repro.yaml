@@ -11,7 +11,7 @@ on:
 jobs:
   test:
     name: "DeltaV2SourceSuite basic"
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
     env:
       SPARK_VERSION: "4.0"
       SCALA_VERSION: "2.13.16"
