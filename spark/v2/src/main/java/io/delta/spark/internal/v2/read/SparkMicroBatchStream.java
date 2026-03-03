@@ -231,6 +231,18 @@ public class SparkMicroBatchStream
    * prepareForTriggerAvailableNow.
    */
   private void initForTriggerAvailableNowIfNeeded(DeltaSourceOffset startOffsetOpt) {
+    // EXPERIMENT: all 3 branches — sleep so StopStream's interrupt lands here reliably.
+    // Position matters: A and B call this OUTSIDE their try-catch → exception propagates → FAIL.
+    // C calls this INSIDE its try-catch → caught by isInterruptedByStop() → PASS.
+    // Remove before production.
+    try {
+      Thread.sleep(500);
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw new KernelEngineException(
+          "Error reading JSON file: interrupted during latestOffset [experiment]",
+          new java.nio.channels.ClosedByInterruptException());
+    }
     if (isTriggerAvailableNow && !isLastOffsetForTriggerAvailableNowInitialized) {
       isLastOffsetForTriggerAvailableNowInitialized = true;
       initLastOffsetForTriggerAvailableNow(startOffsetOpt);
@@ -292,18 +304,6 @@ public class SparkMicroBatchStream
   public Offset latestOffset(Offset startOffset, ReadLimit limit) {
     Objects.requireNonNull(startOffset, "startOffset should not be null for MicroBatchStream");
     Objects.requireNonNull(limit, "limit should not be null for MicroBatchStream");
-
-    // EXPERIMENT: ci-baseline-no-patch only — make interrupt race deterministic.
-    // Sleep on every poll so StopStream's Thread.interrupt() lands here. On interrupt,
-    // throw the exact exception chain the real race produces. Remove before production.
-    try {
-      Thread.sleep(100);
-    } catch (InterruptedException ie) {
-      Thread.currentThread().interrupt();
-      throw new KernelEngineException(
-          "Error reading JSON file: interrupted during latestOffset [experiment]",
-          new java.nio.channels.ClosedByInterruptException());
-    }
 
     DeltaSourceOffset deltaStartOffset = DeltaSourceOffset.apply(tableId, startOffset);
     initForTriggerAvailableNowIfNeeded(deltaStartOffset);
