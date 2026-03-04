@@ -1,0 +1,32 @@
+name: "Flaky Repro"
+on:
+  pull_request:
+    branches:
+      - ci-test-base
+jobs:
+  test:
+    name: "DeltaV2SourceSuite basic"
+    runs-on: self-hosted
+    env:
+      SPARK_VERSION: "4.0"
+      SCALA_VERSION: "2.13.16"
+      XDG_RUNTIME_DIR: /tmp
+    steps:
+      - uses: actions/checkout@v3
+      - name: install java
+        uses: actions/setup-java@v3
+        with:
+          distribution: "zulu"
+          java-version: "17"
+      - name: Cache SBT
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.sbt
+            ~/.ivy2
+            ~/.cache/coursier
+          key: sbt-flaky-${{ hashFiles('build.sbt', 'project/plugins.sbt') }}
+          restore-keys: sbt-flaky-
+      - name: Run DeltaV2SourceSuite basic
+        run: |
+          build/sbt "spark/testOnly org.apache.spark.sql.delta.test.DeltaV2SourceSuite -- -z basic"

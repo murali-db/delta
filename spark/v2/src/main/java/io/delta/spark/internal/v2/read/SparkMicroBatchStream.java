@@ -26,6 +26,7 @@ import io.delta.kernel.data.ColumnarBatch;
 import io.delta.kernel.data.FilteredColumnarBatch;
 import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
+import io.delta.kernel.exceptions.KernelEngineException;
 import io.delta.kernel.exceptions.UnsupportedTableFeatureException;
 import io.delta.kernel.internal.DeltaLogActionUtils.DeltaAction;
 import io.delta.kernel.internal.SnapshotImpl;
@@ -230,6 +231,18 @@ public class SparkMicroBatchStream
    * prepareForTriggerAvailableNow.
    */
   private void initForTriggerAvailableNowIfNeeded(DeltaSourceOffset startOffsetOpt) {
+    // EXPERIMENT: all 3 branches — sleep so StopStream's interrupt lands here reliably.
+    // Position matters: A and B call this OUTSIDE their try-catch → exception propagates → FAIL.
+    // C calls this INSIDE its try-catch → caught by isInterruptedByStop() → PASS.
+    // Remove before production.
+    try {
+      Thread.sleep(500);
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw new KernelEngineException(
+          "Error reading JSON file: interrupted during latestOffset [experiment]",
+          new java.nio.channels.ClosedByInterruptException());
+    }
     if (isTriggerAvailableNow && !isLastOffsetForTriggerAvailableNowInitialized) {
       isLastOffsetForTriggerAvailableNowInitialized = true;
       initLastOffsetForTriggerAvailableNow(startOffsetOpt);
