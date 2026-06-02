@@ -113,12 +113,17 @@ jobs:
           path: ~/.m2/repository/org/apache/spark
           key: spark-m2-ubuntu-24.04-scala-2.13-${{ matrix.spark_version }}-${{ steps.spark-source.outputs.spark_sha }}-${{ hashFiles('project/scripts/build_spark_from_source.sh') }}
       - name: Fail on Spark source cache miss
-        if: matrix.spark_version == '4.2' && steps.spark-source-cache.outputs.cache-hit != 'true'
+        if: matrix.spark_version == '4.2' && matrix.shard == 0 && steps.spark-source-cache.outputs.cache-hit != 'true'
         run: |
           echo "::error::Spark Maven artifacts were not found in the GitHub Actions cache. Run the Spark Source Artifact Cache workflow for $SPARK_SOURCE_REF first."
           exit 1
+      - name: Skip Spark 4.2 shard until source cache is warm
+        if: matrix.spark_version == '4.2' && matrix.shard != 0 && steps.spark-source-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "Skipping Spark 4.2 shard ${{ matrix.shard }} because the source-built Spark cache is not available yet."
+          echo "Shard 0 reports the cache miss as the non-blocking signal."
       - name: Verify restored Spark Maven artifacts
-        if: matrix.spark_version == '4.2'
+        if: matrix.spark_version == '4.2' && steps.spark-source-cache.outputs.cache-hit == 'true'
         env:
           SPARK_ARTIFACT_VERSION: ${{ steps.spark-source.outputs.spark_artifact_version }}
         run: |
@@ -135,6 +140,7 @@ jobs:
             exit 1
           fi
       - name: Restore SBT cache
+        if: matrix.spark_version != '4.2' || steps.spark-source-cache.outputs.cache-hit == 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
@@ -145,13 +151,16 @@ jobs:
       # Delta's sparkUnityCatalog module (part of sparkGroup) depends on APIs that are only in
       # unreleased UC. Publish the pinned UC build locally before sbt tries to resolve it.
       - name: Set up pinned Unity Catalog
+        if: matrix.spark_version != '4.2' || steps.spark-source-cache.outputs.cache-hit == 'true'
         uses: ./.github/actions/setup-unitycatalog
       - name: Scala structured logging style check
+        if: matrix.spark_version != '4.2' || steps.spark-source-cache.outputs.cache-hit == 'true'
         run: |
           if [ -f ./dev/spark_structured_logging_style.py ]; then
               python3 ./dev/spark_structured_logging_style.py
           fi
       - name: Run Scala/Java tests
+        if: matrix.spark_version != '4.2' || steps.spark-source-cache.outputs.cache-hit == 'true'
         env:
           SPARK_COMMIT: ${{ steps.spark-source.outputs.spark_sha }}
           SPARK_ARTIFACT_VERSION: ${{ steps.spark-source.outputs.spark_artifact_version }}
