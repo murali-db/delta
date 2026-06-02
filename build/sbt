@@ -74,17 +74,10 @@ if [[ -n "$MAVEN_PROXY_URL" ]]; then
   local
   maven-proxy: $MAVEN_PROXY_URL
   maven-proxy-ivy: $MAVEN_PROXY_URL, [organization]/[module]/(scala_[scalaVersion]/)(sbt_[sbtVersion]/)[revision]/[type]s/[artifact](-[classifier]).[ext]
+  maven-local: file:///${HOME}/.m2/repository
 EOF
 else
   SBT_REPOSITORIES_CONFIG="$(dirname "$(realpath "$0")")/sbt-config/repositories"
-fi
-if [[ "${SBT_INCLUDE_MAVEN_LOCAL:-false}" == "true" ]]; then
-  SBT_REPOSITORIES_WITH_MAVEN_LOCAL=$(mktemp)
-  cp "$SBT_REPOSITORIES_CONFIG" "$SBT_REPOSITORIES_WITH_MAVEN_LOCAL"
-  cat >> "$SBT_REPOSITORIES_WITH_MAVEN_LOCAL" <<EOF
-  maven-local: file:///${HOME}/.m2/repository
-EOF
-  SBT_REPOSITORIES_CONFIG="$SBT_REPOSITORIES_WITH_MAVEN_LOCAL"
 fi
 export SBT_OPTS="-Dsbt.override.build.repos=true -Dsbt.repository.config=$SBT_REPOSITORIES_CONFIG"
 

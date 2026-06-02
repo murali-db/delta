@@ -361,15 +361,15 @@ object CrossSparkVersions extends AutoPlugin {
    */
   def getSparkVersion(): String = getSparkVersionSpec().fullVersion
 
-  private def getSparkCommit(): Option[String] = {
-    sys.props.get("sparkCommit").orElse(sys.env.get("SPARK_COMMIT")).filter(_.nonEmpty)
+  private def propertyOrEnv(propertyName: String, envName: String): Option[String] = {
+    sys.props.get(propertyName).orElse(sys.env.get(envName)).filter(_.nonEmpty)
   }
 
-  private def getSparkArtifactVersionOverride(): Option[String] = {
-    sys.props.get("sparkArtifactVersion")
-      .orElse(sys.env.get("SPARK_ARTIFACT_VERSION"))
-      .filter(_.nonEmpty)
-  }
+  private def getSparkCommit(): Option[String] =
+    propertyOrEnv("sparkCommit", "SPARK_COMMIT")
+
+  private def getSparkArtifactVersionOverride(): Option[String] =
+    propertyOrEnv("sparkArtifactVersion", "SPARK_ARTIFACT_VERSION")
 
   private def shortCommit(commit: String): String = {
     val trimmed = commit.trim.toLowerCase
@@ -401,6 +401,8 @@ object CrossSparkVersions extends AutoPlugin {
 
   private def sourceBuiltSparkResolvers: Seq[Resolver] = {
     if (getSparkCommit().isDefined || getSparkArtifactVersionOverride().isDefined) {
+      // This covers non-overridden SBT resolution. The build/sbt repository override path also
+      // needs maven-local in its repository config so source-built Spark artifacts are visible.
       Seq(Resolver.mavenLocal)
     } else {
       Seq.empty
